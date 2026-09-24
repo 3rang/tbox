@@ -2,11 +2,15 @@
 # Copyright (c) 2026 Tarang Patel
 #
 # scripts/clean-configure.ps1 - wipe build/ and do a clean configure + build
-# with MSVC (NMake). Run from repo root:
+# with MSVC (NMake), then run the ctest gate. Run from repo root:
 #   powershell -ExecutionPolicy Bypass -File scripts\clean-configure.ps1 `
 #       -TG_API_ID <id> -TG_API_HASH <hash>
 # The credential flags are optional; without them qr-login.exe prints a
 # usage hint at startup instead of authenticating.
+#
+# Produces (single-config NMake -> directly in build/):
+#   tbox.exe  qr-login.exe (demo)  tests\test_*.exe
+# Any failure (configure / build / ctest) throws and exits non-zero.
 
 param(
     [string]$TG_API_ID = "",
@@ -52,7 +56,11 @@ Write-Host "configure ok"
 if ($LASTEXITCODE -ne 0) { throw "cmake build failed ($LASTEXITCODE)" }
 Write-Host "build ok"
 
+Write-Host "running test gate (ctest)..."
+& cmd /c "`"$vcvars`" >nul 2>&1 && ctest --test-dir `"$build`" -C `"$cfg`" --output-on-failure"
+if ($LASTEXITCODE -ne 0) { throw "ctest failed ($LASTEXITCODE)" }
+
 Write-Host ""
 Write-Host "built binaries:"
-Get-ChildItem -LiteralPath $build -Filter "*.exe" -ErrorAction SilentlyContinue |
-    Select-Object Name, Length
+Get-ChildItem -LiteralPath $build -Filter "*.exe" -Recurse -ErrorAction SilentlyContinue |
+    Select-Object FullName, Length
