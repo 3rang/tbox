@@ -25,6 +25,16 @@ if "%VSROOT%"=="" (
 
 call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat" >nul
 
+rem If a previous configure used another generator (e.g. VS Code/CMake Tools
+rem defaults to "Visual Studio 18 2026"), CMake refuses to reuse the dir.
+rem Detect and wipe it so scripts always configure with NMake Makefiles.
+if exist "%ROOT%\build\CMakeCache.txt" (
+    findstr /i /c:"CMAKE_GENERATOR:INTERNAL=NMake Makefiles" "%ROOT%\build\CMakeCache.txt" >nul 2>&1
+    if errorlevel 1 (
+        echo [build-win] stale build/ from another generator - wiping...
+        rmdir /s /q "%ROOT%\build"
+    )
+)
 if not exist "%ROOT%\build" mkdir "%ROOT%\build"
 cmake -S "%ROOT%" -B "%ROOT%\build" -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
 if errorlevel 1 exit /b 1

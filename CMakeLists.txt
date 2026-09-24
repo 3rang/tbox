@@ -20,13 +20,18 @@ target_include_directories(qrcodegen PUBLIC third_party/qrcodegen)
 
 # ---- main binary: tbox ----------------------------------------------------
 # src/ is on the include path so internal headers resolve as:
-#   #include "cli.h"          -> src/cli.h
-#   #include "cmd/cmd_login.h"-> src/cmd/cmd_login.h
+#   #include "cli/cli.h"      -> src/cli/cli.h
+#   #include "cmd/cmd.h"      -> src/cmd/cmd.h
 #   #include "td/tdhandler.h" -> src/td/tdhandler.h
-add_executable(tbox src/main.c)
+add_executable(tbox
+    src/main.c
+    src/cli/cli.c
+    src/cmd/cmd.c)
 target_link_libraries(tbox PRIVATE cjson)
 target_include_directories(tbox PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cli
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cmd
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tdlib_headers)
 target_compile_definitions(tbox PRIVATE TBOX_VERSION="0.5.0")
 
