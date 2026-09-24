@@ -1,0 +1,26 @@
+# build output
+build/
+cmake-build-*/
+out/
+
+# working plan, not part of the repo
+plan/
+Plan.md
+
+# vendored binaries — COMMITTED (decision #3: pinned for offline/CI builds)
+# vendor/ is no longer ignored; DLLs are tracked.
+# vendor/
+# !vendor/.gitkeep
+
+# sessions and secrets
+*.session
+*.session-journal
+.env
+*.binlog
+td.binlog
+.tg-session-*
+
+# logs and caches
+*.log
+__pycache__/
+.pytest_cache/
