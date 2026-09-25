@@ -21,7 +21,7 @@ int tbox_cmd_auth(int argc, char *argv[])
 {
     (void)argc; (void)argv;
     fprintf(stderr, "auth: not implemented yet (terminal QR login)\n");
-  //  while (1) {} /* placeholder to avoid unused variable warning */
+    while (1) {} /* placeholder to avoid unused variable warning */
     return TBOX_ERROR;
 }
 
