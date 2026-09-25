@@ -35,14 +35,23 @@ endfunction()
 # internal headers resolve as:
 #   #include "cli/cli.h"      -> src/cli/cli.h
 #   #include "cmd/cmd.h"      -> src/cmd/cmd.h
-#   #include "util/signal.h"  -> src/util/signal.h
+#   #include "util/tbox_signal.h" -> src/util/tbox_signal.h
 #   #include "td/tdhandler.h" -> src/td/tdhandler.h
-add_library(tboxcore STATIC src/cli/cli.c src/cmd/cmd.c src/util/signal.c)
+add_library(tboxcore STATIC src/cli/cli.c src/cmd/cmd.c)
 target_include_directories(tboxcore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cli
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cmd
     ${CMAKE_CURRENT_SOURCE_DIR}/src/util)
+# Interrupt listener: one header (util/tbox_signal.h), one native backend per OS.
+# tests/test_signal.c is the SAME file on both platforms.
+if(WIN32)
+    target_sources(tboxcore PRIVATE src/util/signal_win.c)
+else()
+    target_sources(tboxcore PRIVATE src/util/signal_posix.c)
+    find_package(Threads REQUIRED)          # -> -pthread (compile + link)
+    target_link_libraries(tboxcore PRIVATE Threads::Threads)
+endif()
 tbox_apply_warnings(tboxcore)
 
 # ---- main binary: tbox ----------------------------------------------------
@@ -88,4 +97,10 @@ add_subdirectory(tests)
 # (see cmake/tdjson-vendored.cmake). tbox + qr-login only — the unit tests
 # must stay TDLib-free, so they are NOT listed here.
 set(TBOX_TDJSON_TARGETS tbox qr-login)
-include(cmake/tdjson-vendored.cmake)
+if(WIN32)
+    include(cmake/tdjson-vendored.cmake)
+else()
+    message(STATUS
+        "tdjson link/staging is Windows-only here; POSIX wiring lands with "
+        "Step 18 (CI delivery). Configure + ctest already work without it.")
+endif()

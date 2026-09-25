@@ -5,7 +5,7 @@
 
 #include "cli/cli.h"
 #include "cmd/cmd.h"
-#include "util/signal.h"
+#include "util/tbox_signal.h"
 
 int main(int argc, char *argv[])
 {
