@@ -9,168 +9,219 @@
 #include <stdlib.h>
 #include <windows.h>
 
-static tbox_os_event_func_t g_callback = NULL;
-
-static volatile LONG g_event = OS_EVENT_NONE;
 
 
-/*
- * Windows console control handler.
- *
- * Called by Windows when:
- *
- * Ctrl+C
- * Ctrl+Break
- * Console close
- * Logoff
- * Shutdown
- */
+static tbox_signal_callback_t g_callback = NULL;
+
+static HANDLE g_signal_event = NULL;
+
+static volatile LONG g_signal_type = OS_SIGNAL_NONE;
+
+
 static BOOL WINAPI os_console_handler(DWORD signal)
 {
+    tbox_signal_t event;
+
     switch (signal) {
 
-        case CTRL_C_EVENT:
-            InterlockedExchange(
-                &g_event,
-                OS_EVENT_INTERRUPT
-            );
-            return TRUE;
+    case CTRL_C_EVENT:
+        event = OS_SIGNAL_INTERRUPT;
+        break;
 
-        case CTRL_BREAK_EVENT:
-            InterlockedExchange(
-                &g_event,
-                OS_EVENT_BREAK
-            );
-            return TRUE;
+    case CTRL_BREAK_EVENT:
+        event = OS_SIGNAL_BREAK;
+        break;
 
-        case CTRL_CLOSE_EVENT:
-            InterlockedExchange(
-                &g_event,
-                OS_EVENT_TERMINATE
-            );
-            return TRUE;
+    case CTRL_CLOSE_EVENT:
+        event = OS_SIGNAL_TERMINATE;
+        break;
 
-        case CTRL_LOGOFF_EVENT:
-            InterlockedExchange(
-                &g_event,
-                OS_EVENT_LOGOFF
-            );
-            return TRUE;
+    case CTRL_LOGOFF_EVENT:
+        event = OS_SIGNAL_LOGOFF;
+        break;
 
-        case CTRL_SHUTDOWN_EVENT:
-            InterlockedExchange(
-                &g_event,
-                OS_EVENT_SHUTDOWN
-            );
-            return TRUE;
+    case CTRL_SHUTDOWN_EVENT:
+        event = OS_SIGNAL_SHUTDOWN;
+        break;
 
-        default:
-            return FALSE;
+    default:
+        return FALSE;
     }
+
+
+    /*
+     * Only record the event and wake the worker.
+     *
+     * Don't call application code here.
+     */
+    InterlockedExchange(
+        &g_signal_type,
+        (LONG)event
+    );
+
+    SetEvent(g_signal_event);
+
+    return TRUE;
 }
 
 
-int tbox_os_event_start(tbox_os_event_func_t callback)
+static DWORD WINAPI os_signal_thread(LPVOID arg)
 {
+    tbox_signal_thread_t *thread = arg;
+
+    while (1) {
+
+        DWORD result;
+
+        result = WaitForSingleObject(
+            thread->event,
+            INFINITE
+        );
+
+        if (result != WAIT_OBJECT_0)
+            break;
+
+
+        tbox_signal_t event =
+            (tbox_signal_t)InterlockedExchange(
+                &g_signal_type,
+                OS_SIGNAL_NONE
+            );
+
+
+        if (event == OS_SIGNAL_NONE)
+            break;
+
+
+        if (g_callback != NULL)
+            g_callback(event);
+
+
+        /*
+         * For this design, terminate the signal thread
+         * after a termination event.
+         */
+        if (event == OS_SIGNAL_INTERRUPT ||
+            event == OS_SIGNAL_BREAK ||
+            event == OS_SIGNAL_TERMINATE ||
+            event == OS_SIGNAL_LOGOFF ||
+            event == OS_SIGNAL_SHUTDOWN) {
+
+            break;
+        }
+    }
+
+    return 0;
+}
+
+
+int tbox_os_signal_start(tbox_signal_thread_t *thread,
+                    tbox_signal_callback_t callback)
+{
+    if (thread == NULL || callback == NULL)
+        return -1;
+
+
     g_callback = callback;
 
-    InterlockedExchange(
-        &g_event,
-        OS_EVENT_NONE
+
+    g_signal_event = CreateEventA(
+        NULL,
+        FALSE,      /* auto reset */
+        FALSE,
+        NULL
     );
+
+    if (g_signal_event == NULL) {
+        g_callback = NULL;
+        return -1;
+    }
+
+
+    thread->event = g_signal_event;
+
 
     if (!SetConsoleCtrlHandler(
             os_console_handler,
             TRUE)) {
 
+        CloseHandle(g_signal_event);
+
+        g_signal_event = NULL;
+        thread->event = NULL;
+        g_callback = NULL;
+
         return -1;
     }
+
+
+    thread->thread = CreateThread(
+        NULL,
+        0,
+        os_signal_thread,
+        thread,
+        0,
+        NULL
+    );
+
+    if (thread->thread == NULL) {
+
+        SetConsoleCtrlHandler(
+            os_console_handler,
+            FALSE
+        );
+
+        CloseHandle(g_signal_event);
+
+        g_signal_event = NULL;
+        thread->event = NULL;
+        g_callback = NULL;
+
+        return -1;
+    }
+
 
     return 0;
 }
 
 
-void tbox_os_event_stop(void)
+int tbox_os_signal_stop(tbox_signal_thread_t *thread)
 {
+    if (thread == NULL)
+        return -1;
+
+
+    /*
+     * Remove the console handler first so that
+     * new console events are no longer accepted.
+     */
     SetConsoleCtrlHandler(
         os_console_handler,
         FALSE
     );
 
-    g_callback = NULL;
-}
+
+    /*
+     * Wake the thread if it is waiting.
+     */
+    SetEvent(thread->event);
 
 
-int tbox_os_event_received(void)
-{
-    tbox_os_event_t event;
-
-    event = (tbox_os_event_t)InterlockedExchange(
-        &g_event,
-        OS_EVENT_NONE
+    WaitForSingleObject(
+        thread->thread,
+        INFINITE
     );
 
-    if (event == OS_EVENT_NONE)
-        return 0;
 
-    if (g_callback != NULL)
-        g_callback(event);
-
-    return 1;
-}
-
-/* ---- thread API ----------------------------------------------------------- */
-
-typedef struct {
-    tbox_os_thread_func_t func;
-    void *arg;
-} os_thread_context_t;
-
-static DWORD WINAPI os_thread_entry(LPVOID arg)
-{
-    os_thread_context_t *ctx = arg;
-    ctx->func(ctx->arg);
-    free(ctx);
-    return 0;
-}
+    CloseHandle(thread->thread);
+    CloseHandle(thread->event);
 
 
-int tbox_os_thread_create(tbox_os_thread_t *thread,
-                     tbox_os_thread_func_t func,
-                     void *arg)
-{
-    if (!thread || !func) {
-        return -1;
-    }
+    thread->thread = NULL;
+    thread->event = NULL;
 
-    os_thread_context_t *ctx = malloc(sizeof(os_thread_context_t));
-    if (!ctx) {
-        return -1;
-    }
-    ctx->func = func;
-    ctx->arg = arg;
-
-    thread->handle = CreateThread(NULL, 0, os_thread_entry, ctx, 0, NULL);
-
-    if (!thread->handle) {
-        free(ctx);
-        return -1;
-    }
+    g_signal_event = NULL;
+    g_callback = NULL;
 
     return 0;
-}
-
-int tbox_os_thread_join(tbox_os_thread_t *thread)
-{
-    DWORD result;
-    result = WaitForSingleObject(thread->handle, INFINITE);
-    return (result == WAIT_OBJECT_0) ? 0 : -1;
-}
-
-void tbox_os_thread_close(tbox_os_thread_t *thread)
-{
-    if (thread->handle != NULL) {
-        CloseHandle(thread->handle);
-        thread->handle = NULL;
-    }
 }

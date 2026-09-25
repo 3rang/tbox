@@ -6,148 +6,195 @@
  */
 
 #include "tbox_signal.h"
-#include <pthread.h>
 #include <signal.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
+#include <stdio.h>
+#include <string.h>
+
 
 /*
- * Application callback.
+ * Callback shared with signal thread.
  */
-static tbox_os_event_func_t g_callback = NULL;
+static tbox_signal_callback_t g_callback = NULL;
+
 
 /*
- * Set by the signal handler.
+ * Signal thread.
  *
- * sig_atomic_t is specifically intended for communication
- * between a signal handler and normal code.
+ * Signals are synchronously received using sigwait().
  */
-static volatile sig_atomic_t g_event = OS_EVENT_NONE;
-
-
-/*
- * Convert POSIX signal -> common OS event.
- */
-static void os_signal_handler(int signal)
+static void *tbox_os_signal_thread(void *arg)
 {
-    switch (signal) {
+    tbox_signal_thread_t *ctx = arg;
+    int sig;
+    int ret;
+
+    while (1) {
+
+        /*
+         * Block here until one of the signals arrives.
+         */
+        ret = sigwait(&ctx->set,&sig);
+
+        if (ret != 0) {
+            fprintf(
+                stderr,
+                "sigwait() failed: %d\n",
+                ret
+            );
+
+            break;
+        }
+
+        switch (sig) {
 
         case SIGINT:
-            g_event = OS_EVENT_INTERRUPT;
+
+            if (g_callback != NULL)
+                g_callback(OS_SIGNAL_INTERRUPT);
+
             break;
+
+
+        case SIGTERM:
+
+            if (g_callback != NULL)
+                g_callback(OS_SIGNAL_TERMINATE);
+
+            break;
+
 
 #ifdef SIGQUIT
         case SIGQUIT:
-            g_event = OS_EVENT_BREAK;
+
+            if (g_callback != NULL)
+                g_callback(OS_SIGNAL_BREAK);
+
             break;
 #endif
 
-        case SIGTERM:
-            g_event = OS_EVENT_TERMINATE;
-            break;
 
 #ifdef SIGHUP
         case SIGHUP:
-            g_event = OS_EVENT_HANGUP;
+
+            if (g_callback != NULL)
+                g_callback(OS_SIGNAL_HANGUP);
+
             break;
 #endif
+
 
         default:
             break;
+        }
     }
+
+    return NULL;
 }
 
 
-/*
- * Install POSIX signal handlers.
- */
-int tbox_os_event_start(tbox_os_event_func_t callback)
+int tbox_os_signal_start(tbox_signal_thread_t *thread,
+                    tbox_signal_callback_t callback)
 {
-    struct sigaction sa;
+    int ret;
 
-    memset(&sa, 0, sizeof(sa));
-
-    sa.sa_handler = os_signal_handler;
-
-    sigemptyset(&sa.sa_mask);
-
-    g_callback = callback;
-    g_event = OS_EVENT_NONE;
-
-    if (sigaction(SIGINT, &sa, NULL) != 0)
+    if (thread == NULL || callback == NULL)
         return -1;
 
-    if (sigaction(SIGTERM, &sa, NULL) != 0)
-        return -1;
+
+    /*
+     * Configure signals that the signal thread will receive.
+     */
+    sigemptyset(&thread->set);
+
+    sigaddset(&thread->set, SIGINT);
+    sigaddset(&thread->set, SIGTERM);
 
 #ifdef SIGQUIT
-    if (sigaction(SIGQUIT, &sa, NULL) != 0)
-        return -1;
+    sigaddset(&thread->set, SIGQUIT);
 #endif
 
 #ifdef SIGHUP
-    if (sigaction(SIGHUP, &sa, NULL) != 0)
-        return -1;
+    sigaddset(&thread->set, SIGHUP);
 #endif
+
+
+    /*
+     * Block these signals in the calling thread.
+     *
+     * Newly created threads inherit this signal mask.
+     */
+    ret = pthread_sigmask(SIG_BLOCK,&thread->set,NULL);
+
+    if (ret != 0) {
+
+        fprintf(
+            stderr,
+            "pthread_sigmask() failed: %d\n",
+            ret
+        );
+
+        return -1;
+    }
+
+
+    g_callback = callback;
+
+
+    /*
+     * Start dedicated signal thread.
+     */
+    ret = pthread_create(&thread->thread,NULL,tbox_os_signal_thread,thread);
+
+    if (ret != 0) {
+
+        fprintf(
+            stderr,
+            "pthread_create() failed: %d\n",
+            ret
+        );
+
+        g_callback = NULL;
+
+        return -1;
+    }
 
     return 0;
 }
 
 
-void tbox_os_event_stop(void)
+int tbox_os_signal_stop(tbox_signal_thread_t *thread)
 {
+    if (thread == NULL)
+        return -1;
+
+
+    /*
+     * Cancel the signal thread.
+     *
+     * sigwait() is a cancellation point on POSIX
+     * implementations.
+     */
+    pthread_cancel(thread->thread);
+
+    pthread_join(thread->thread,NULL);
+
+
     g_callback = NULL;
-}
 
 
-/*
- * Application can periodically call this.
- */
-int tbox_os_event_received(void)
-{
-    tbox_os_event_t event;
+    /*
+     * Note:
+     *
+     * The signal mask of the calling thread remains blocked.
+     * If you want to restore the original mask, store the
+     * previous mask during os_signal_start().
+     */
 
-    event = g_event;
+    memset(thread,0,sizeof(*thread));
 
-    if (event == OS_EVENT_NONE)
-        return 0;
-
-    g_event = OS_EVENT_NONE;
-
-    if (g_callback != NULL)
-        g_callback(event);
-
-    return 1;
-}
-
-/* ---- thread API ----------------------------------------------------------- */
-
-int tbox_os_thread_create(tbox_os_thread_t *thread,
-                     tbox_os_thread_func_t func,
-                     void *arg)
-{
-    if (!thread || !func) {
-        return -1;
-    }
-
-    return pthread_create(&thread->handle, NULL, func, arg);
-}
-
-int tbox_os_thread_join(tbox_os_thread_t *thread)
-{
-    if (!thread) {
-        return -1;
-    }
-
-    return pthread_join(thread->handle, NULL);
-}
-
-void tbox_os_thread_close(tbox_os_thread_t *thread)
-{
-    if (!thread) {
-        return;
-    }
-
-    pthread_detach(thread->handle);
+    return 0;
 }

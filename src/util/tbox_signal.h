@@ -6,144 +6,110 @@
 #ifndef TBOX_SIGNAL_H
 #define TBOX_SIGNAL_H
 
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
+/*
+ * Platform selection
+ */
 #if defined(_WIN32) || defined(_WIN64)
 
-#define OS_PLATFORM_WINDOWS
-#include <windows.h>
+    #define OS_SIGNAL_WINDOWS
+    #include <windows.h>
 
-#elif defined(__unix__) || defined(__APPLE__)
+#elif defined(__linux__) || defined(__APPLE__)
 
-#define OS_PLATFORM_POSIX
-#include <pthread.h>
+    #define OS_SIGNAL_POSIX
+    #include <pthread.h>
+    #include <signal.h>
 
 #else
 
-#error "Unsupported platform"
+    #error "Unsupported operating system"
 
 #endif
 
-typedef struct {
-   #if defined(OS_PLATFORM_WINDOWS)
-    HANDLE handle;
-    #elif defined(OS_PLATFORM_POSIX)
-    pthread_t handle;
-    #endif
-} tbox_os_thread_t;
-
-typedef void *(*tbox_os_thread_func_t)(void *arg);
-
 
 /*
- * ============================================================
- * OS signal / console events
- * ============================================================
- */
-
-/*
- * Common event types exposed to the application.
- *
- * Different OS-specific signals are converted into these
- * common events.
+ * Common signals/events exposed to the application.
  */
 typedef enum
 {
-    OS_EVENT_NONE = 0,
+    OS_SIGNAL_NONE = 0,
 
-    /* User pressed Ctrl+C / SIGINT */
-    OS_EVENT_INTERRUPT,
+    /* Ctrl+C / SIGINT */
+    OS_SIGNAL_INTERRUPT,
 
     /* Ctrl+Break / SIGQUIT */
-    OS_EVENT_BREAK,
+    OS_SIGNAL_BREAK,
 
-    /* SIGTERM / Windows console close */
-    OS_EVENT_TERMINATE,
+    /* SIGTERM / console close */
+    OS_SIGNAL_TERMINATE,
 
-    /* SIGHUP / console/session related event */
-    OS_EVENT_HANGUP,
+    /* SIGHUP */
+    OS_SIGNAL_HANGUP,
 
     /* Windows logoff */
-    OS_EVENT_LOGOFF,
+    OS_SIGNAL_LOGOFF,
 
     /* Windows shutdown */
-    OS_EVENT_SHUTDOWN
+    OS_SIGNAL_SHUTDOWN
 
-} tbox_os_event_t;
+} tbox_signal_t;
 
 
 /*
- * Callback called when an OS event occurs.
+ * Application callback.
+ *
+ * This callback is executed by the signal thread,
+ * NOT directly from the OS signal handler.
  */
-typedef void (*tbox_os_event_func_t)(tbox_os_event_t event);
+typedef void (*tbox_signal_callback_t)(tbox_signal_t signal);
 
 
 /*
- * ============================================================
- * Thread API
- * ============================================================
+ * Signal thread handle.
  */
+typedef struct
+{
+#if defined(OS_SIGNAL_WINDOWS)
+
+    HANDLE thread;
+    HANDLE event;
+
+#elif defined(OS_SIGNAL_POSIX)
+
+    pthread_t thread;
+    sigset_t set;
+
+#endif
+
+} tbox_signal_thread_t;
+
 
 /*
- * Start a thread.
+ * Start signal handling thread.
+ *
+ * The signal thread waits for OS signals/events while
+ * the main application continues running.
  *
  * Returns:
  *   0  = success
- *  -1  = error
+ *  -1  = failure
  */
-int tbox_os_thread_create(tbox_os_thread_t *thread,
-                    tbox_os_thread_func_t func,
-                    void *arg);
+int tbox_os_signal_start(tbox_signal_thread_t *thread,
+                    tbox_signal_callback_t callback);
 
 
 /*
- * Wait for thread to finish.
+ * Stop signal handling thread and release resources.
  *
  * Returns:
  *   0  = success
- *  -1  = error
+ *  -1  = failure
  */
-int tbox_os_thread_join(tbox_os_thread_t *thread);
-
-
-/*
- * Release thread resources.
- */
-void tbox_os_thread_close(tbox_os_thread_t *thread);
-
-
-/*
- * ============================================================
- * OS event API
- * ============================================================
- */
-
-/*
- * Start OS event handling.
- *
- * The callback is called when Ctrl+C, SIGTERM, etc.
- * are received.
- */
-int tbox_os_event_start(tbox_os_event_func_t callback);
-
-
-/*
- * Stop OS event handling.
- */
-void tbox_os_event_stop(void);
-
-
-/*
- * Check whether an interrupt/termination event was received.
- *
- * Returns:
- *   1 = event received
- *   0 = no event
- */
-int tbox_os_event_received(void);
+int tbox_os_signal_stop(tbox_signal_thread_t *thread);
 
 
 #ifdef __cplusplus

@@ -4,11 +4,10 @@
  *
  * test_signal.c - tests for src/util/tbox_signal.h.
  *
- * The module provides:
- *   - a cross-platform OS thread wrapper (tbox_os_thread_create/join/close)
- *   - an OS event API (tbox_os_event_start/stop/received) that normalizes
- *     Ctrl+C / Ctrl+Break / SIGTERM / SIGHUP etc. into tbox_os_event_t
- * These tests exercise that contract with the same file on both platforms.
+ * The module runs a dedicated signal thread (SetConsoleCtrlHandler on
+ * Windows, sigwait() on POSIX) that normalizes OS signals into
+ * tbox_signal_t and dispatches them to an application callback. These
+ * tests exercise that contract with the same file on both platforms.
  * Headless by rule - no TDLib, no network.
  */
 
@@ -16,95 +15,85 @@
 #include <signal.h>
 #include "util/tbox_signal.h"
 
+#if defined(OS_SIGNAL_POSIX)
+#include <unistd.h>   /* getpid, usleep */
+#include <sys/types.h>
+#endif
+
 static int failures = 0;
 
 static void check(const char *what, int got, int want)
 {
     if (got == want) {
-        printf("ok   %-36s got %d\n", what, got);
+        printf("ok   %-40s got %d\n", what, got);
     } else {
-        printf("FAIL %-36s got %d want %d\n", what, got, want);
+        printf("FAIL %-40s got %d want %d\n", what, got, want);
         failures++;
     }
 }
 
-/* ---- thread API ----------------------------------------------------------- */
+static volatile tbox_signal_t g_last = OS_SIGNAL_NONE;
 
-static void *worker_set(void *arg)
+static void record_callback(tbox_signal_t signal)
 {
-    int *p = (int *)arg;
-    *p = 42;
-    return NULL;
+    g_last = signal;
 }
 
-static void test_threads(void)
+static void test_bad_args(void)
 {
-    tbox_os_thread_t th;
-    int val = 0;
+    tbox_signal_thread_t th;
 
-    /* create -> worker runs on its own thread -> join -> close */
-    check("thread: create", tbox_os_thread_create(&th, worker_set, &val), 0);
-    check("thread: join", tbox_os_thread_join(&th), 0);
-    tbox_os_thread_close(&th);
-    check("thread: worker ran with arg", val, 42);
-
-    /* invalid arguments -> -1, no thread started */
-    check("thread: create NULL func", tbox_os_thread_create(&th, NULL, NULL), -1);
-    check("thread: create NULL thread", tbox_os_thread_create(NULL, worker_set, NULL), -1);
-
-    /* a second round trip stays healthy (no leaked state) */
-    val = 0;
-    check("thread: create again", tbox_os_thread_create(&th, worker_set, &val), 0);
-    check("thread: join again", tbox_os_thread_join(&th), 0);
-    tbox_os_thread_close(&th);
-    check("thread: second worker ran", val, 42);
+    check("start NULL thread", tbox_os_signal_start(NULL, record_callback), -1);
+    check("start NULL callback", tbox_os_signal_start(&th, NULL), -1);
 }
 
-/* ---- event API ------------------------------------------------------------ */
-
-static tbox_os_event_t g_last_event = OS_EVENT_NONE;
-
-static void record_callback(tbox_os_event_t event)
+static void test_lifecycle(void)
 {
-    g_last_event = event;
+    tbox_signal_thread_t th;
+
+    check("start", tbox_os_signal_start(&th, record_callback), 0);
+    check("stop", tbox_os_signal_stop(&th), 0);
+
+    /* restart works: resources are fully released by stop */
+    check("start again", tbox_os_signal_start(&th, record_callback), 0);
+    check("stop again", tbox_os_signal_stop(&th), 0);
 }
 
-static void test_events(void)
+#if defined(OS_SIGNAL_POSIX)
+static void test_posix_signal(void)
 {
-    /* lifecycle: start -> no event -> stop, all clean */
-    check("event: start", tbox_os_event_start(record_callback), 0);
-    check("event: none received", tbox_os_event_received(), 0);
-    check("event: still none", tbox_os_event_received(), 0);
-    tbox_os_event_stop();
+    tbox_signal_thread_t th;
+    int spins = 0;
 
-    /* NULL callback is accepted; nothing to invoke */
-    check("event: start NULL cb", tbox_os_event_start(NULL), 0);
-    check("event: none received (NULL cb)", tbox_os_event_received(), 0);
-    tbox_os_event_stop();
+    /*
+     * tbox_os_signal_start() blocks SIGINT in this thread; the signal
+     * thread accepts it via sigwait(). kill(getpid(), ...) sends a
+     * process-directed signal, which is what sigwait() in another thread
+     * can receive (a plain raise() would be thread-directed and stuck in
+     * this thread). Bounded spin: the callback runs on the signal thread.
+     */
+    g_last = OS_SIGNAL_NONE;
 
-    /* restart is idempotent */
-    check("event: restart 1", tbox_os_event_start(record_callback), 0);
-    tbox_os_event_stop();
-    check("event: restart 2", tbox_os_event_start(record_callback), 0);
-    tbox_os_event_stop();
+    check("posix: start", tbox_os_signal_start(&th, record_callback), 0);
 
-#if defined(OS_PLATFORM_POSIX)
-    /* positive path (POSIX only): a real SIGINT reaches received() once,
-     * the callback sees the normalized event, and the event is cleared. */
-    g_last_event = OS_EVENT_NONE;
-    check("event: start (posix)", tbox_os_event_start(record_callback), 0);
-    raise(SIGINT);
-    check("event: received after SIGINT", tbox_os_event_received(), 1);
-    check("event: callback got INTERRUPT", g_last_event == OS_EVENT_INTERRUPT, 1);
-    check("event: consumed (cleared)", tbox_os_event_received(), 0);
-    tbox_os_event_stop();
+    kill(getpid(), SIGINT);
+
+    while (g_last == OS_SIGNAL_NONE && spins < 5000)
+        { usleep(1000); spins++; }
+
+    check("posix: callback got INTERRUPT",
+          g_last == OS_SIGNAL_INTERRUPT, 1);
+    check("posix: stop", tbox_os_signal_stop(&th), 0);
+}
 #endif
-}
 
 int main(void)
 {
-    test_threads();
-    test_events();
+    test_bad_args();
+    test_lifecycle();
+#if defined(OS_SIGNAL_POSIX)
+    test_posix_signal();
+#endif
 
     printf(failures ? "FAILED (%d)\n" : "test_signal: all green\n", failures);
     return failures ? 1 : 0;
