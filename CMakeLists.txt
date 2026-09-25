@@ -18,18 +18,32 @@ target_include_directories(cjson PUBLIC third_party/cjson)
 add_library(qrcodegen STATIC third_party/qrcodegen/qrcodegen.c)
 target_include_directories(qrcodegen PUBLIC third_party/qrcodegen)
 
+# ---- compiler hardening (ground rule 1: /W4 /WX green) ----------------------
+# Applied to project code only - vendored deps (cjson/qrcodegen) and the
+# proven demo binary (ported wholesale in Step 4) build without it for now.
+function(tbox_apply_warnings target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /WX)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Werror)
+    endif()
+endfunction()
+
 # ---- core library: tboxcore ------------------------------------------------
-# CLI dispatcher + internal command registry. Shared by tbox.exe and the
-# headless unit tests. src/ is on the include path so internal headers
-# resolve as:
+# CLI dispatcher + internal command registry + interrupt listener. Shared by
+# tbox.exe and the headless unit tests. src/ is on the include path so
+# internal headers resolve as:
 #   #include "cli/cli.h"      -> src/cli/cli.h
 #   #include "cmd/cmd.h"      -> src/cmd/cmd.h
+#   #include "util/signal.h"  -> src/util/signal.h
 #   #include "td/tdhandler.h" -> src/td/tdhandler.h
-add_library(tboxcore STATIC src/cli/cli.c src/cmd/cmd.c)
+add_library(tboxcore STATIC src/cli/cli.c src/cmd/cmd.c src/util/signal.c)
 target_include_directories(tboxcore PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cli
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/cmd)
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/cmd
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/util)
+tbox_apply_warnings(tboxcore)
 
 # ---- main binary: tbox ----------------------------------------------------
 add_executable(tbox src/main.c)
@@ -37,6 +51,7 @@ target_link_libraries(tbox PRIVATE tboxcore cjson)
 target_include_directories(tbox PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tdlib_headers)
 target_compile_definitions(tbox PRIVATE TBOX_VERSION="0.5.0")
+tbox_apply_warnings(tbox)
 
 # ---- demo: qr-login (always built) -----------------------------------------
 # demo/qr_login.c — minimal TDLib QR-code login demo (new API, cJSON,
