@@ -8,13 +8,17 @@
 # The credential flags are optional; without them qr-login.exe prints a
 # usage hint at startup instead of authenticating.
 #
+# -NoTests configures with -DTBOX_BUILD_TESTS=OFF (builds only tbox.exe +
+# qr-login.exe, skips the ctest gate) - handy while iterating on the CLI.
+#
 # Produces (single-config NMake -> directly in build/):
 #   tbox.exe  qr-login.exe (demo)  tests\test_*.exe
 # Any failure (configure / build / ctest) throws and exits non-zero.
 
 param(
     [string]$TG_API_ID = "",
-    [string]$TG_API_HASH = ""
+    [string]$TG_API_HASH = "",
+    [switch]$NoTests
 )
 
 $ErrorActionPreference = "Stop"
@@ -47,8 +51,12 @@ $creds = ""
 if ($TG_API_ID -ne "" -and $TG_API_HASH -ne "") {
     $creds = " -DTG_API_ID=$TG_API_ID -DTG_API_HASH=$TG_API_HASH"
 }
+$testsFlag = ""
+if ($NoTests) {
+    $testsFlag = " -DTBOX_BUILD_TESTS=OFF"
+}
 
-& cmd /c "`"$vcvars`" >nul 2>&1 && cmake -S `"$root`" -B `"$build`" -G `"$gen`" -DCMAKE_BUILD_TYPE=`"$cfg`"$creds"
+& cmd /c "`"$vcvars`" >nul 2>&1 && cmake -S `"$root`" -B `"$build`" -G `"$gen`" -DCMAKE_BUILD_TYPE=`"$cfg`"$creds$testsFlag"
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed ($LASTEXITCODE)" }
 Write-Host "configure ok"
 
@@ -56,9 +64,13 @@ Write-Host "configure ok"
 if ($LASTEXITCODE -ne 0) { throw "cmake build failed ($LASTEXITCODE)" }
 Write-Host "build ok"
 
-Write-Host "running test gate (ctest)..."
-& cmd /c "`"$vcvars`" >nul 2>&1 && ctest --test-dir `"$build`" -C `"$cfg`" --output-on-failure"
-if ($LASTEXITCODE -ne 0) { throw "ctest failed ($LASTEXITCODE)" }
+if ($NoTests) {
+    Write-Host "tests disabled (-NoTests) - skipping ctest gate"
+} else {
+    Write-Host "running test gate (ctest)..."
+    & cmd /c "`"$vcvars`" >nul 2>&1 && ctest --test-dir `"$build`" -C `"$cfg`" --output-on-failure"
+    if ($LASTEXITCODE -ne 0) { throw "ctest failed ($LASTEXITCODE)" }
+}
 
 Write-Host ""
 Write-Host "built binaries:"

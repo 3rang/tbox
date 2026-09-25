@@ -89,8 +89,16 @@ endif()
 
 # ---- tests: every tests/test_*.c -> test_*.exe + CTest entry ---------------
 # Headless by rule (no TDLib, no network). See tests/CMakeLists.txt.
-enable_testing()
-add_subdirectory(tests)
+#
+# Switch tests OFF for faster iteration while hacking on the CLI:
+#   cmake -S . -B build -DTBOX_BUILD_TESTS=OFF
+#   scripts\clean-configure.ps1 -NoTests
+# New tests/test_*.c are picked up automatically while ON (CONFIGURE_DEPENDS).
+option(TBOX_BUILD_TESTS "Build unit test binaries (tests/test_*.exe) + CTest" ON)
+if(TBOX_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
 
 # ---- tdjson: link + stage DLLs next to the binaries that need them ----------
 # Targets that link libtdjson and need it staged next to them

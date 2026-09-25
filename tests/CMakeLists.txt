@@ -6,6 +6,12 @@
 #   cmake --build build && ctest --test-dir build -C Release --output-on-failure
 # Tests are headless by rule — no TDLib, no network, no secrets.
 
+# Safety guard: the top-level CMakeLists already skips this subdirectory when
+# TBOX_BUILD_TESTS=OFF; keep the file safe to load standalone too.
+if(NOT TBOX_BUILD_TESTS)
+    return()
+endif()
+
 file(GLOB TBOX_TEST_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test_*.c")
 list(SORT TBOX_TEST_SOURCES)
 

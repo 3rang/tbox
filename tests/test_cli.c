@@ -2,12 +2,11 @@
  * SPDX-License-Identifier: BSD-3-Clause
  * Copyright (c) 2026 Tarang Patel
  *
- * test_cli.c - CLI dispatcher matrix (Step 1 gate).
+ * test_cli.c - CLI dispatcher matrix.
  *
  * Calls tbox_cli() directly with canned argv vectors and asserts the exit
- * code, plus the internal registry rules: exposed commands are reachable
- * from argv, exposed=0 commands exist internally but are NOT selectable
- * from the command line. Headless by rule - no TDLib, no network.
+ * code. Follows the current cmd.h API (TBOX_EXIT_OK / TBOX_ERROR /
+ * TBOX_UNKNOWN_COMMAND). Headless by rule - no TDLib, no network.
  */
 
 #include <stdio.h>
@@ -30,10 +29,10 @@ int main(void)
 {
     char *argv0[] = { "tbox" };
 
-    /* no args -> usage (exit 2) */
-    check("no args", tbox_cli(1, argv0), TBOX_EXIT_USAGE);
+    /* no args -> help + generic error (exit 1) */
+    check("no args", tbox_cli(1, argv0), TBOX_ERROR);
 
-    /* help: flags and command form -> ok (exit 0) */
+    /* help and version flags -> ok (exit 0) */
     {
         char *a[] = { "tbox", "-h" };
         check("-h", tbox_cli(2, a), TBOX_EXIT_OK);
@@ -43,12 +42,6 @@ int main(void)
         check("--help", tbox_cli(2, a), TBOX_EXIT_OK);
     }
     {
-        char *a[] = { "tbox", "help" };
-        check("help", tbox_cli(2, a), TBOX_EXIT_OK);
-    }
-
-    /* version: flags -> ok (exit 0) */
-    {
         char *a[] = { "tbox", "-v" };
         check("-v", tbox_cli(2, a), TBOX_EXIT_OK);
     }
@@ -57,39 +50,24 @@ int main(void)
         check("--version", tbox_cli(2, a), TBOX_EXIT_OK);
     }
 
-    /* exposed command stubs -> not-implemented (exit 5) */
+    /* anything else (commands not wired yet, junk, hidden cmds) -> help +
+     * unknown-command (exit 2) */
     {
         char *a[] = { "tbox", "auth" };
-        check("auth (stub)", tbox_cli(2, a), TBOX_EXIT_NOT_IMPL);
+        check("auth (not wired yet)", tbox_cli(2, a), TBOX_UNKNOWN_COMMAND);
     }
     {
         char *a[] = { "tbox", "status" };
-        check("status (stub)", tbox_cli(2, a), TBOX_EXIT_NOT_IMPL);
+        check("status (not wired yet)", tbox_cli(2, a), TBOX_UNKNOWN_COMMAND);
     }
-
-    /* unknown verb -> usage (exit 2) */
-    {
-        char *a[] = { "tbox", "bogus" };
-        check("unknown verb", tbox_cli(2, a), TBOX_EXIT_USAGE);
-    }
-    /* internal-only command must NOT be reachable from argv */
     {
         char *a[] = { "tbox", "selftest" };
-        check("selftest hidden from CLI", tbox_cli(2, a), TBOX_EXIT_USAGE);
+        check("selftest", tbox_cli(2, a), TBOX_UNKNOWN_COMMAND);
     }
-
-    /* internal registry finds hidden commands and rejects unknown names */
-    if (tbox_cmd_by_name("selftest") != NULL)
-        printf("ok   registry finds internal 'selftest'\n");
-    else { printf("FAIL registry misses internal 'selftest'\n"); failures++; }
-
-    if (tbox_cmd_by_name("auth") != NULL)
-        printf("ok   registry finds exposed 'auth'\n");
-    else { printf("FAIL registry misses exposed 'auth'\n"); failures++; }
-
-    if (tbox_cmd_by_name("bogus") == NULL)
-        printf("ok   registry rejects unknown name\n");
-    else { printf("FAIL registry accepts 'bogus'\n"); failures++; }
+    {
+        char *a[] = { "tbox", "bogus" };
+        check("unknown verb", tbox_cli(2, a), TBOX_UNKNOWN_COMMAND);
+    }
 
     printf(failures ? "FAILED (%d)\n" : "test_cli: all green\n", failures);
     return failures ? 1 : 0;

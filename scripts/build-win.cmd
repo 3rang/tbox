@@ -36,15 +36,28 @@ if exist "%ROOT%\build\CMakeCache.txt" (
     )
 )
 if not exist "%ROOT%\build" mkdir "%ROOT%\build"
+
+rem Configure with tests unless the user asked for them off (build-win always
+rem configures with whatever the cache already holds; to switch, re-configure:
+rem   cmake -S "%ROOT%" -B "%ROOT%\build" -DTBOX_BUILD_TESTS=OFF
 cmake -S "%ROOT%" -B "%ROOT%\build" -G "NMake Makefiles" -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
 if errorlevel 1 exit /b 1
 cmake --build "%ROOT%\build"
 if errorlevel 1 exit /b 1
 
+rem Test gate: with no tests to run ctest exits nonzero, so honour
+rem -DTBOX_BUILD_TESTS=OFF and skip the gate instead.
+findstr /i /c:"TBOX_BUILD_TESTS:BOOL=OFF" "%ROOT%\build\CMakeCache.txt" >nul 2>&1
+if not errorlevel 1 goto notests
 echo.
 echo Running test gate (ctest)...
 ctest --test-dir "%ROOT%\build" -C %BUILD_TYPE% --output-on-failure
 if errorlevel 1 exit /b 1
+goto gate_done
+:notests
+echo.
+echo Tests disabled - skipping ctest gate.
+:gate_done
 
 echo.
 echo Build OK. Binaries:
