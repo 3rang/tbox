@@ -5,8 +5,9 @@
  * test_cli.c - CLI dispatcher matrix.
  *
  * Calls tbox_cli() directly with canned argv vectors and asserts the exit
- * code. Follows the current cmd.h API (TBOX_EXIT_OK / TBOX_ERROR /
- * TBOX_UNKNOWN_COMMAND). Headless by rule - no TDLib, no network.
+ * code. Follows cmd.h semantics: 0 success, 1 runtime error (stubs =
+ * "not implemented"), 2 unknown command / usage. Headless by rule - no
+ * TDLib, no network.
  */
 
 #include <stdio.h>
@@ -18,56 +19,47 @@ static int failures = 0;
 static void check(const char *what, int got, int want)
 {
     if (got == want) {
-        printf("ok   %-28s exit %d\n", what, got);
+        printf("ok   %-30s exit %d\n", what, got);
     } else {
-        printf("FAIL %-28s got %d want %d\n", what, got, want);
+        printf("FAIL %-30s got %d want %d\n", what, got, want);
         failures++;
     }
 }
 
 int main(void)
 {
-    char *argv0[] = { "tbox" };
+    char *noargs[]    = { "tbox" };
+    char *h[]         = { "tbox", "-h" };
+    char *help_flag[] = { "tbox", "--help" };
+    char *v[]         = { "tbox", "-v" };
+    char *ver[]       = { "tbox", "--version" };
+    char *help_cmd[]  = { "tbox", "help" };
+    char *auth[]      = { "tbox", "auth" };
+    char *auth_x[]    = { "tbox", "auth", "ignored" };
+    char *status[]    = { "tbox", "status" };
+    char *selftest[]  = { "tbox", "selftest" };
+    char *bogus[]     = { "tbox", "bogus" };
 
-    /* no args -> help + generic error (exit 1) */
-    check("no args", tbox_cli(1, argv0), TBOX_ERROR);
+    /* usage */
+    check("no args (usage)", tbox_cli(1, noargs), TBOX_UNKNOWN_COMMAND);
 
-    /* help and version flags -> ok (exit 0) */
-    {
-        char *a[] = { "tbox", "-h" };
-        check("-h", tbox_cli(2, a), TBOX_EXIT_OK);
-    }
-    {
-        char *a[] = { "tbox", "--help" };
-        check("--help", tbox_cli(2, a), TBOX_EXIT_OK);
-    }
-    {
-        char *a[] = { "tbox", "-v" };
-        check("-v", tbox_cli(2, a), TBOX_EXIT_OK);
-    }
-    {
-        char *a[] = { "tbox", "--version" };
-        check("--version", tbox_cli(2, a), TBOX_EXIT_OK);
-    }
+    /* flags */
+    check("-h", tbox_cli(2, h), TBOX_EXIT_OK);
+    check("--help", tbox_cli(2, help_flag), TBOX_EXIT_OK);
+    check("-v", tbox_cli(2, v), TBOX_EXIT_OK);
+    check("--version", tbox_cli(2, ver), TBOX_EXIT_OK);
 
-    /* anything else (commands not wired yet, junk, hidden cmds) -> help +
-     * unknown-command (exit 2) */
-    {
-        char *a[] = { "tbox", "auth" };
-        check("auth (not wired yet)", tbox_cli(2, a), TBOX_UNKNOWN_COMMAND);
-    }
-    {
-        char *a[] = { "tbox", "status" };
-        check("status (not wired yet)", tbox_cli(2, a), TBOX_UNKNOWN_COMMAND);
-    }
-    {
-        char *a[] = { "tbox", "selftest" };
-        check("selftest", tbox_cli(2, a), TBOX_UNKNOWN_COMMAND);
-    }
-    {
-        char *a[] = { "tbox", "bogus" };
-        check("unknown verb", tbox_cli(2, a), TBOX_UNKNOWN_COMMAND);
-    }
+    /* named commands */
+    check("help command", tbox_cli(2, help_cmd), TBOX_EXIT_OK);
+
+    /* stubs: reachable, honest "not implemented yet" -> runtime error (1) */
+    check("auth (stub)", tbox_cli(2, auth), TBOX_ERROR);
+    check("auth + extra arg (stub)", tbox_cli(3, auth_x), TBOX_ERROR);
+    check("status (stub)", tbox_cli(2, status), TBOX_ERROR);
+    check("selftest (stub)", tbox_cli(2, selftest), TBOX_ERROR);
+
+    /* unknown */
+    check("unknown verb", tbox_cli(2, bogus), TBOX_UNKNOWN_COMMAND);
 
     printf(failures ? "FAILED (%d)\n" : "test_cli: all green\n", failures);
     return failures ? 1 : 0;

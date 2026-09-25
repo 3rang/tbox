@@ -4,7 +4,6 @@
  */
 
 #include <stdio.h>
-#include <string.h>
 #include "cmd.h"
 
 #ifndef TBOX_VERSION
@@ -14,6 +13,29 @@
 void tbox_cmd_version(void)
 {
     printf("tbox %s\n", TBOX_VERSION);
+}
+
+/* ---- command stubs (real logic lands with the login work) ---------------- */
+
+int tbox_cmd_auth(int argc, char *argv[])
+{
+    (void)argc; (void)argv;
+    fprintf(stderr, "auth: not implemented yet (terminal QR login)\n");
+    return TBOX_ERROR;
+}
+
+int tbox_cmd_status(int argc, char *argv[])
+{
+    (void)argc; (void)argv;
+    fprintf(stderr, "status: not implemented yet\n");
+    return TBOX_ERROR;
+}
+
+int tbox_cmd_selftest(int argc, char *argv[])
+{
+    (void)argc; (void)argv;
+    fprintf(stderr, "selftest: not implemented yet\n");
+    return TBOX_ERROR;
 }
 
 void tbox_cmd_help(void)
@@ -26,7 +48,7 @@ void tbox_cmd_help(void)
     printf("  auth       log in via QR code (QR-only)\n");
     printf("  status     show session/account state\n");
     printf("  help       show this help\n");
-    printf("  selftest   internal self-test (not exposed on CLI)\n");
+    printf("  selftest   run the internal self-test\n");
     printf("\n");
     printf("flags:\n");
     printf("  -v, --version   print version\n");

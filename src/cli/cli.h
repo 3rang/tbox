@@ -7,10 +7,10 @@
 #define TBOX_CLI_H
 
 /*
- * CLI entry point: parse argv and dispatch to the internal command table
- * (see cmd/cmd.h). Returns an exit code (TBOX_EXIT_*).
+ * CLI entry point: parse argv and dispatch to the command implementations
+ * (see cmd/cmd.h). Returns an exit code (TBOX_EXIT_* / TBOX_ERROR).
  *
- * Surface is intentionally small: auth | status | help | -v | -h.
+ * Surface: auth | status | help | selftest | -v | -h.
  * QR-only by design - there is no --qr switch; auth is QR by default.
  */
 int tbox_cli(int argc, char *argv[]);

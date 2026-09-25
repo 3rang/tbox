@@ -5,12 +5,8 @@
 
 #include "cli/cli.h"
 #include "cmd/cmd.h"
-#include "util/tbox_signal.h"
 
 int main(int argc, char *argv[])
 {
-  
-    int rc = tbox_cli(argc, argv);
-
-    return rc;
+    return tbox_cli(argc, argv);
 }
