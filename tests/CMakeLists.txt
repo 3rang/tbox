@@ -15,7 +15,7 @@ foreach(_test_src ${TBOX_TEST_SOURCES})
     target_include_directories(${_test_name} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../src                 # src/cli.h, src/td/*.h, ...
         ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/cjson)
-    target_link_libraries(${_test_name} PRIVATE cjson)
+    target_link_libraries(${_test_name} PRIVATE tboxcore)
     target_compile_definitions(${_test_name} PRIVATE TBOX_VERSION="0.5.0")
     add_test(NAME ${_test_name} COMMAND ${_test_name})
 endforeach()
