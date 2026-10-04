@@ -10,8 +10,8 @@ rem Produces in build\:
 rem   tbox.exe             main CLI
 rem   qr-login.exe         demo\ (terminal QR-login, always built)
 rem   tests\test_*.exe     unit tests
-rem then runs the ctest gate. Configure with credentials for the live QR
-rem flow:  cmake -B build -DTG_API_ID=<id> -DTG_API_HASH=<hash>
+rem then runs the ctest gate. Credentials are NOT build options: the live QR
+rem flow reads TG_API_ID / TG_API_HASH from the environment at run time.
 setlocal
 set "ROOT=%~dp0.."
 set "BUILD_TYPE=Release"

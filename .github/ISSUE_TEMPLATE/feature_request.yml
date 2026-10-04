@@ -1,0 +1,54 @@
+name: Feature request
+description: Suggest a capability or a change in behavior
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the goal, not the implementation. "I want WinSCP to see my Saved Messages as folders" beats "add an FTP LIST handler".
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like tbox to do?
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you already tried or ruled out?
+      description: Including scripts or another tool that does part of this.
+      render: text
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which area?
+      options:
+        - archive / index (names, folders, captions)
+        - read path (download, cache)
+        - write path (upload, delete, rename, mkdir)
+        - FTP transport
+        - SFTP transport
+        - auth / session
+        - status / tray / service integration
+        - build / packaging / CI
+        - docs
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints this must respect
+      options:
+        - label: Works on Windows, Linux and macOS
+        - label: Keeps the tests headless (no TDLib, no network, no secrets)
+        - label: Keeps `tboxcore` free of TDLib
+        - label: Byte-compatible with the v0.3 caption schema

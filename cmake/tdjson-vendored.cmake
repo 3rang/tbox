@@ -5,6 +5,8 @@
 set(TBOX_TDJSON_VERSION "1.8.67" CACHE STRING "TDLib version pinned by scripts/fetch-tdjson.*")
 
 # Path to prebuilt libtdjson. Leave empty to auto-detect in vendor/.
+# Explicit OFF means "no TDLib layer at all" (see the same rule in the
+# top-level CMakeLists.txt; keep both in sync).
 set(TBOX_TDJSON_LIBRARY "" CACHE FILEPATH "Path to prebuilt libtdjson (leave empty to auto-detect in vendor/)")
 
 # Targets that link tdjson and need the DLL staged next to them.
@@ -14,7 +16,9 @@ if(NOT DEFINED TBOX_TDJSON_TARGETS)
 endif()
 list(REMOVE_DUPLICATES TBOX_TDJSON_TARGETS)
 
-if(NOT TBOX_TDJSON_LIBRARY)
+if(TBOX_TDJSON_LIBRARY STREQUAL "OFF")
+  set(TBOX_TDJSON_LIBRARY "")
+elseif(NOT TBOX_TDJSON_LIBRARY)
   if(WIN32)
     set(_tdjson_candidate "${CMAKE_SOURCE_DIR}/vendor/tdjson.dll")
   elseif(APPLE)

@@ -1,0 +1,196 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2026 Tarang Patel
+#
+# Cut a release: tag `vX.Y.Z`, this workflow builds, tests, packages and
+# publishes the artifacts, then attaches them to a GitHub release.
+#
+#   git tag v0.5.0
+#   git push origin v0.5.0
+#
+# Linux/macOS artifacts are intentionally not built yet: the TDLib prebuilts
+# in vendor/ are Windows DLLs, and on POSIX scripts/fetch-tdjson.sh must also
+# stage TDLib's sibling shared libraries (libcrypto/libssl/zlib) next to the
+# binary before a packaged build is worth shipping. Adding them later is one
+# entry in the matrix below - see the note in ci.yml too.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)publish, e.g. v0.5.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.artifact }})
+    runs-on: ${{ matrix.os }}
+    # One place decides what we are publishing: the pushed tag, or the tag
+    # typed into the manual run. Every step reads this.
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: tbox-windows-x64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Never publish a red build: the same gate CI runs.
+      - name: build + ctest (MSVC)
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts\clean-configure.ps1
+
+      # The version is compiled in, so the binary itself is the source of
+      # truth for "is this the tag we meant to ship?".
+      - name: binary version matches the tag
+        shell: pwsh
+        run: |
+          $tag = $env:RELEASE_TAG
+          if ($tag -notmatch '^v[0-9]') {
+            throw "RELEASE_TAG is not a v-prefixed version: '$tag'"
+          }
+          $want = $tag -replace '^v', ''
+          $got = (.\build\tbox.exe --version) -replace '^tbox\s+', ''
+          if ($got -ne $want) {
+            throw "tag $tag does not match the built version ($got). Update TBOX_VERSION in CMakeLists.txt / tests/CMakeLists.txt."
+          }
+          Write-Host "shipping tbox $got as $tag"
+
+      # Everything the binary needs at run time: the executables, the staged
+      # TDLib DLLs, and the three documents a new user needs.
+      - name: stage package
+        shell: pwsh
+        run: |
+          $tag = $env:RELEASE_TAG
+          $dir = "dist/$tag/${{ matrix.artifact }}"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+
+          Copy-Item .\build\tbox.exe        $dir
+          Copy-Item .\build\qr-login.exe    $dir
+          foreach ($dll in Get-ChildItem .\build\*.dll) {
+            Copy-Item $dll.FullName $dir
+          }
+          Copy-Item .\README.md $dir
+          Copy-Item .\LICENSE   $dir
+
+          # Credentials are environment-only and nothing here needs them to
+          # start; say so inside the package too.
+          @"
+          tbox $tag - Telegram Saved Messages as a folder tree
+          ====================================================
+
+          Windows x64 prebuilt. Includes the TDLib runtime DLLs.
+
+          Quick start
+            set TG_API_ID=<your api id>          https://my.telegram.org/apps
+            set TG_API_HASH=<your api hash>
+            tbox.exe selftest        check this machine, offline
+            tbox.exe auth            log in by QR code (scanned from Telegram)
+            tbox.exe status          show the service state
+            tbox.exe serve           own the session and serve the archive
+
+          No config file and no credentials on disk: TG_API_ID / TG_API_HASH
+          are read from the environment every time. See README.md for the
+          full picture.
+          "@ | Set-Content -Encoding utf8 (Join-Path $dir "QUICKSTART.txt")
+
+          $zip = "dist/$(${{ matrix.artifact }})-$tag.zip"
+          Compress-Archive -Path "$dir/*" -DestinationPath $zip
+
+          $sum = Get-FileHash -Algorithm SHA256 $zip
+          "$($sum.Hash.ToLower())  $(${{ matrix.artifact }})-$tag.zip" |
+            Set-Content -Encoding ascii "dist/$(${{ matrix.artifact }})-$tag.zip.sha256"
+
+          Get-ChildItem -Recurse dist | Select-Object FullName, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            dist/${{ matrix.artifact }}-*.zip
+            dist/${{ matrix.artifact }}-*.zip.sha256
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write          # creating the release is the whole point
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: list artifacts
+        run: ls -l dist
+
+      - name: create the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          test -n "$tag"
+
+          # Never upload nothing.
+          shopt -s nullglob
+          assets=(dist/*.zip dist/*.sha256)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "::error::no artifacts were produced - refusing to publish"
+            exit 1
+          fi
+
+          {
+            echo "Prebuilt binaries for \`$tag\` (Windows x64)."
+            echo
+            echo "The archive contains tbox.exe, the QR-login demo, the TDLib"
+            echo "runtime DLLs, README.md, LICENSE and a QUICKSTART.txt."
+            echo
+            echo "\`\`\`\`"
+            echo "set TG_API_ID=<your api id>"
+            echo "set TG_API_HASH=<your api hash>"
+            echo "tbox.exe selftest"
+            echo "\`\`\`\`"
+            echo
+            echo "Credentials are read from the environment only - no config"
+            echo "file, nothing compiled in. See README.md for the full"
+            echo "picture and CHANGELOG.md for what changed."
+            echo
+            echo "Verify the download:"
+            echo
+            echo '```'
+            cat dist/*.sha256
+            echo '```'
+          } > notes.md
+
+          # Re-running a failed publish must not fail on "already exists".
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" --clobber
+            gh release edit "$tag" --notes-file notes.md
+            echo "updated existing release $tag"
+          else
+            gh release create "$tag" "${assets[@]}" \
+              --verify-tag --title "tbox $tag" --notes-file notes.md
+            echo "created release $tag"
+          fi

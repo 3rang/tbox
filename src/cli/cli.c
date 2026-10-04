@@ -36,6 +36,10 @@ int tbox_cli(int argc, char *argv[])
     {
         return tbox_cmd_auth(argc, argv);
     }
+    else if (strcmp(argv[1], "serve") == 0)
+    {
+        return tbox_cmd_serve(argc, argv);
+    }
     else if (strcmp(argv[1], "status") == 0)
     {
         return tbox_cmd_status(argc, argv);

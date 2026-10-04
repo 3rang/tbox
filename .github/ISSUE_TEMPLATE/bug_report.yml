@@ -1,0 +1,84 @@
+name: Bug report
+description: Something in tbox does not work, or works differently than the README says
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please do **not** paste `TG_API_HASH`, any
+        `status.json`, or anything from your data directory - describe them
+        instead.
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What did you run, and what happened?
+      description: The exact command and the output you got (and expected).
+      placeholder: |
+        $ tbox serve --data D:\tbox
+        serve: already running (pid 4242).
+        Expected: ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: command
+    attributes:
+      label: Which command?
+      options:
+        - tbox auth
+        - tbox serve
+        - tbox status
+        - tbox selftest
+        - build / ctest
+        - other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Platform
+      options:
+        - Windows x64
+        - Windows ARM64
+        - Linux x86_64
+        - Linux aarch64
+        - macOS Intel
+        - macOS Apple Silicon
+    validations:
+      required: true
+
+  - type: textarea
+    id: build
+    attributes:
+      label: Build details
+      description: |
+        Output of `tbox --version`, and whether `tbox auth` reports
+        "not available in this build" (that means TDLib was not linked).
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: status
+    attributes:
+      label: tbox status output
+      description: Paste the `tbox status` output if the archive or the service is involved.
+      render: text
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: The smallest sequence of steps that shows the problem.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else?
+      description: Crashes, error dialogs, what you already tried.
+      render: text

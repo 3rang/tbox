@@ -1,7 +1,16 @@
 # build output
 build/
+build-*/
 cmake-build-*/
 out/
+dist/
+
+# IDE / editor droppings
+.vs/
+.vscode/
+.idea/
+compile_commands.json
+*.user
 
 # working plan, not part of the repo
 plan/
@@ -15,7 +24,6 @@ Plan.md
 # sessions and secrets
 *.session
 *.session-journal
-.env
 *.binlog
 td.binlog
 .tg-session-*

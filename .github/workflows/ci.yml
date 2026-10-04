@@ -1,0 +1,195 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Copyright (c) 2026 Tarang Patel
+#
+# The gate this project lives by:
+#   * every OS builds clean with warnings-as-errors
+#     (MSVC /W4 /WX, GCC -Wall -Wextra -Werror)
+#   * ctest is green - every suite, on every OS
+#   * `tbox selftest` (the shipped offline check) is green on every OS
+#   * `tbox status` never writes to the filesystem
+#   * the TDLib-less build still works, and the TDLib build fails closed
+#     without credentials (no secrets are needed anywhere in CI)
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------- core ----
+  # The build every platform must satisfy. Windows additionally builds the
+  # core WITHOUT TDLib, because vendor/ ships Windows DLLs and CI would
+  # otherwise never exercise the TDLib-less path here.
+  core:
+    name: core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: toolchain
+        shell: bash
+        run: |
+          cmake --version | head -1
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            echo "generator: NMake Makefiles (MSVC via scripts/clean-configure.ps1)"
+          else
+            "${CC:-cc}" --version | head -1
+          fi
+
+      # Windows runs the exact script a developer runs: it finds Visual
+      # Studio with vswhere, enters vcvars64 itself, then builds + tests.
+      - name: build + ctest (MSVC)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File scripts\clean-configure.ps1 `
+            -CMakeArgs "-DTBOX_TDJSON_LIBRARY=OFF"
+
+      - name: build + ctest (POSIX)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j
+          ctest --test-dir build --output-on-failure
+
+      - name: shipped self-test
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: .\build\tbox.exe selftest
+
+      - name: shipped self-test
+        if: runner.os != 'Windows'
+        shell: bash
+        run: ./build/tbox selftest
+
+      # status must be pure read: it may not create the directory it is
+      # asked about, and it must report "not running" by exiting 1.
+      - name: status is read-only
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "tbox_ci_absent"
+          if (Test-Path -LiteralPath $dir) { throw "$dir must not exist yet" }
+          .\build\tbox.exe status --data $dir
+          if ($LASTEXITCODE -ne 1) { throw "expected exit 1, got $LASTEXITCODE" }
+          if (Test-Path -LiteralPath $dir) { throw "status created $dir" }
+
+      - name: status is read-only
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          dir="$RUNNER_TEMP/tbox_ci_absent"
+          rm -rf "$dir"
+          if ./build/tbox status --data "$dir"; then
+            echo "::error::status must exit non-zero when nothing is running"
+            exit 1
+          fi
+          test ! -e "$dir" || { echo "::error::status created $dir"; exit 1; }
+
+      # vendor/ holds Windows binaries only, so CMake skips src/td on
+      # POSIX. Compile it here anyway: warnings there must not rot.
+      - name: td sources compile standalone (-Werror)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -e
+          for f in src/td/tdparams.c src/td/tdhandler.c; do
+            echo "compiling $f"
+            "${CC:-cc}" -std=c17 -Wall -Wextra -Werror \
+              -I src -I third_party/cjson -I third_party/tdlib_headers \
+              -c "$f" -o /dev/null
+          done
+
+      - name: upload build log on failure
+        if: failure() && runner.os != 'Windows'
+        shell: bash
+        run: ls -R build || true
+
+  # -------------------------------------------------------------- tdlib ----
+  # Windows only, and deliberately so: the TDLib prebuilts in vendor/ are
+  # Windows DLLs, so this is the platform where the whole runtime path is
+  # actually verified. Linux/macOS need scripts/fetch-tdjson.sh plus staging
+  # of TDLib's sibling .so files (libcrypto/libssl/zlib) - tracked as the
+  # next blocker before those artifacts ship a release.
+  tdlib:
+    name: tdlib (windows, vendored DLLs)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build + ctest with TDLib
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts\clean-configure.ps1
+
+      - name: runtime DLLs are staged next to the binaries
+        shell: pwsh
+        run: |
+          foreach ($dll in "tdjson.dll", "libcrypto-3-x64.dll", "libssl-3-x64.dll", "z.dll") {
+            if (-not (Test-Path -LiteralPath ".\build\$dll")) {
+              throw "missing staged runtime DLL: $dll"
+            }
+          }
+
+      - name: the QR-login regression demo is built
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath .\build\qr-login.exe)) {
+            throw "qr-login.exe was not built"
+          }
+
+      # Credentials are environment-only and there are none in CI, so `auth`
+      # must fail fast, exit 1 and name the variable - proving the
+      # fail-closed path without ever needing a secret.
+      - name: auth fails closed without credentials
+        shell: pwsh
+        run: |
+          Remove-Item Env:TG_API_ID -ErrorAction SilentlyContinue
+          Remove-Item Env:TG_API_HASH -ErrorAction SilentlyContinue
+
+          $p = Start-Process -FilePath .\build\tbox.exe -ArgumentList "auth" `
+                -NoNewWindow -Wait -PassThru `
+                -RedirectStandardOutput auth.out -RedirectStandardError auth.err
+          Get-Content auth.out
+          Get-Content auth.err
+
+          if ($p.ExitCode -ne 1) { throw "expected exit 1, got $($p.ExitCode)" }
+          if (-not (Select-String -Path auth.err -Pattern "TG_API_ID" -Quiet)) {
+            throw "stderr does not mention TG_API_ID"
+          }
+
+  # ------------------------------------------------------- sanitizers ----
+  # The same headless suites under ASan + UBSan. Linux only: MSVC has no
+  # equivalent we can rely on across hosted runners.
+  sanitizers:
+    name: asan + ubsan (ubuntu)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build + ctest under sanitizers
+        shell: bash
+        run: |
+          cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-asan -j
+          ctest --test-dir build-asan --output-on-failure
+          ASAN_OPTIONS=detect_leaks=1 ./build-asan/tbox selftest

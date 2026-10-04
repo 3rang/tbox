@@ -1,0 +1,34 @@
+# Line endings matter here: the POSIX CI jobs run shell scripts and MSVC runs
+# batch files, and a CRLF/LF mix breaks one or the other. Source is stored LF
+# in the repository and checked out LF everywhere; only the Windows-native
+# scripts get CRLF working copies.
+
+* text=auto
+
+*.c        text eol=lf
+*.h        text eol=lf
+*.md       text eol=lf
+*.txt      text eol=lf
+*.sh       text eol=lf
+*.yml      text eol=lf
+*.yaml     text eol=lf
+*.cmake    text eol=lf
+CMakeLists.txt text eol=lf
+
+*.cmd      text eol=crlf
+*.bat      text eol=crlf
+*.ps1      text eol=crlf
+
+# vendored prebuilt binaries - never touched by a line-ending pass
+*.dll      binary
+*.so       binary
+*.dylib    binary
+*.lib      binary
+*.a        binary
+*.o        binary
+*.obj      binary
+*.exe      binary
+*.zip      binary
+*.tar.gz   binary
+*.png      binary
+*.jpg      binary

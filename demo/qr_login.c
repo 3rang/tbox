@@ -3,10 +3,10 @@
  * Copyright (c) 2026 Tarang Patel
  *
  * demo/qr_login.c - minimal TDLib QR-code login demo (new API, cJSON,
- * qrcodegen). Credentials are compiled in by CMake, easy-telegram style:
+ * qrcodegen). Credentials come from the environment:
  *
- *   cmake -S . -B build -DTG_API_ID=123456 -DTG_API_HASH=0123456789abcdef...
- *   cmake --build build
+ *   set TG_API_ID=123456 && set TG_API_HASH=0123456789abcdef...  (Windows)
+ *   export TG_API_ID=123456 TG_API_HASH=0123456789abcdef...    (Linux)
  *   build\qr-login.exe
  *
  * Flow: td_create_client_id -> setTdlibParameters (in-memory, no files) ->
@@ -34,16 +34,50 @@
 
 #define RECV_TIMEOUT 1.0 /* seconds each td_receive() poll waits */
 
-/* Credentials arrive as compile definitions from CMake; without them the
- * demo explains how to configure and exits before touching TDLib. */
-#ifndef TBOX_TG_API_ID
-#define TBOX_TG_API_ID 0
-#endif
-#ifndef TBOX_TG_API_HASH
-#define TBOX_TG_API_HASH ""
-#endif
-
 static int g_vt = 0; /* ANSI/UTF-8 console support enabled */
+static int g_api_id = 0;
+static char g_api_hash[64] = "";
+
+/* Credentials are read from the environment (like `tbox auth`) and
+ * validated before TDLib is touched. Returns 0 on success. */
+static int load_credentials(void)
+{
+    const char *id_env = getenv("TG_API_ID");
+    const char *hash_env = getenv("TG_API_HASH");
+    char *end;
+    long parsed;
+
+    if (id_env == NULL || id_env[0] == '\0') {
+        fprintf(stderr,
+                "qr-login: TG_API_ID is not set "
+                "(https://my.telegram.org/apps).\n"
+#ifdef _WIN32
+                "  set TG_API_ID=<id> && set TG_API_HASH=<hash>\n"
+#else
+                "  export TG_API_ID=<id> TG_API_HASH=<hash>\n"
+#endif
+                );
+        return -1;
+    }
+    parsed = strtol(id_env, &end, 10);
+    if (end == id_env || *end != '\0' || parsed <= 0 || parsed > 2147483647L) {
+        fprintf(stderr,
+                "qr-login: TG_API_ID must be digits only, got \"%s\".\n",
+                id_env);
+        return -1;
+    }
+    g_api_id = (int)parsed;
+
+    if (hash_env == NULL || strlen(hash_env) != 32) {
+        fprintf(stderr,
+                "qr-login: TG_API_HASH must be 32 hex digits (got %u).\n",
+                hash_env != NULL ? (unsigned)strlen(hash_env) : 0u);
+        return -1;
+    }
+    snprintf(g_api_hash, sizeof g_api_hash, "%s", hash_env);
+
+    return 0;
+}
 
 static void send_req(int client_id, cJSON *req); /* forward */
 
@@ -200,28 +234,24 @@ int main(void)
     int client_id, done = 0, qr_sent = 0, getme_sent = 0;
     char prev_link[512] = "";
 
-    if (TBOX_TG_API_ID == 0 || TBOX_TG_API_HASH[0] == '\0') {
-        fprintf(stderr,
-                "qr-login: no Telegram credentials compiled in.\n"
-                "Configure them first, e.g.\n"
-                "  cmake -S . -B build -DTG_API_ID=<id> "
-                "-DTG_API_HASH=<hash>\n");
+    if (load_credentials() != 0)
         return 1;
-    }
 
 #ifdef _WIN32
     g_vt = enable_vt();
 #endif
 
-    /* Keep the terminal clean: TDLib's own log chatter off. */
-    td_set_log_verbosity_level(0);
+    /* Keep the terminal clean: TDLib's own log chatter off. The vendored
+     * 2026 td_json_client.h no longer declares td_set_log_verbosity_level,
+     * so use the synchronous option request instead. */
+    (void)td_execute("{\"@type\":\"setLogVerbosityLevel\",\"new_level\":0}");
 
     client_id = td_create_client_id();
 
     cJSON *params = cJSON_CreateObject();
     cJSON_AddStringToObject(params, "@type", "setTdlibParameters");
-    cJSON_AddNumberToObject(params, "api_id", (double)TBOX_TG_API_ID);
-    cJSON_AddStringToObject(params, "api_hash", TBOX_TG_API_HASH);
+    cJSON_AddNumberToObject(params, "api_id", (double)g_api_id);
+    cJSON_AddStringToObject(params, "api_hash", g_api_hash);
     cJSON_AddBoolToObject(params, "use_test_dc", 0);
     cJSON_AddStringToObject(params, "database_directory", "");
     cJSON_AddStringToObject(params, "files_directory", "");

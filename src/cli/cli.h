@@ -10,7 +10,13 @@
  * CLI entry point: parse argv and dispatch to the command implementations
  * (see cmd/cmd.h). Returns an exit code (TBOX_EXIT_* / TBOX_ERROR).
  *
- * Surface: auth | status | help | selftest | -v | -h.
+ * Surface:
+ *   auth [--data <dir>]     log in via QR code (QR-only)
+ *   serve [--data <dir>]    own the session and serve the archive
+ *   status [--data <dir>]   show serve state (reads status.json only)
+ *   selftest                check the core rules offline
+ *   help | -v | -h
+ *
  * QR-only by design - there is no --qr switch; auth is QR by default.
  */
 int tbox_cli(int argc, char *argv[]);
