@@ -1,0 +1,28 @@
+# Build outputs
+build/
+dist/
+*.egg-info/
+out/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual envs
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# tbox runtime data (secrets + local index — never commit)
+.env
+*.db
+session.lock
+.cache/
+
+# Local-only folders (never pushed)
+archive/
+vendor/
