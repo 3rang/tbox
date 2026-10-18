@@ -1,0 +1,15 @@
+# build trees
+build/
+build-*/
+dist/
+out/
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# never commit a session or credentials
+.tbox/
+*.env
