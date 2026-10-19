@@ -14,8 +14,13 @@ powershell -ExecutionPolicy Bypass -File scripts\build-native.ps1
 Requires Visual Studio Build Tools (MSVC via vcvars) and CMake. The script
 cleans `build/`, configures, compiles, and runs the test gate.
 
-The native TDLib library (`tdjson.dll` + companion DLLs) is not committed;
-place it in `vendor/` or point `TBOX_TDJSON` at it.
+The TDLib runtime (`tdjson.dll`, OpenSSL companions, `z.dll`) ships in
+`vendor/`. If it goes missing, re-download it with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\fetch-tdjson.ps1   # Windows
+bash scripts/fetch-tdjson.sh                                        # Linux
+```
 
 ## License
 

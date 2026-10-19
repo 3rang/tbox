@@ -25,4 +25,3 @@ session.lock
 
 # Local-only folders (never pushed)
 archive/
-vendor/
