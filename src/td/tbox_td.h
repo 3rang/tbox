@@ -1,31 +1,45 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Tarang Patel
  *
- * tbox_td.h — native TDLib bridge: load tdjson, synchronous execute.
+ * tbox_td.h — TDLib JSON API: link-time declarations, import-library style.
  *
- * Purity rules for the whole C core:
- *   - no environment variables, no known paths, no global state
- *   - callers pass in every path (the library path here)
- *   - memory rule: the CALLER frees every string this API returns
+ * tdjson's C symbols are declared raw (msvcgt.def style) and linked via the
+ * import library CMake builds from tdjson.dll (cmake/tdjson-vendored.cmake).
+ * The DLLs are staged next to every binary by CMake POST_BUILD.
+ *
+ * Memory rules:
+ *   - td_execute/receive results are valid ONLY until the next call —
+ *     copy anything you keep (tbox_td_execute already returns a caller-owned copy)
+ *   - the CALLER frees every string this API returns
  */
 #ifndef TBOX_TD_H
 #define TBOX_TD_H
 
-typedef struct TBoxTd TBoxTd;
+#include <stddef.h>
 
-/* Load the tdjson shared library from an explicit path.
- * Returns NULL (nothing is loaded) if the path is bad or loading fails. */
-TBoxTd *tbox_td_open(const char *library_path);
+/* --- the td_json_client C API, declared and resolved at link time --- */
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-/* Synchronous td_execute — works only for the few methods TDLib allows
+int   td_create_client_id(void);
+void  td_send(int client_id, const char *request);
+const char *td_receive(double timeout);
+char *td_execute(const char *request);
+void  td_set_log_verbosity_level(int level);
+
+#ifdef __cplusplus
+}
+#endif
+
+/* --- thin tbox wrappers ------------------------------------------------- */
+
+void tbox_td_init(int verbosity);
+void tbox_td_close(void);
+
+/* Synchronous td_execute — works only for methods TDLib allows
  * synchronously (log management etc.). Returns a freshly malloc'd JSON
  * response the caller must free, or NULL if TDLib gave no reply. */
-char *tbox_td_execute(TBoxTd *td, const char *request_json);
-
-/* Verbosity 0..5 (0 = quiet). Safe no-op before the library loaded symbols. */
-void tbox_td_set_verbosity(TBoxTd *td, int level);
-
-/* Unload the library. NULL is allowed (no-op). */
-void tbox_td_close(TBoxTd *td);
+char *tbox_td_execute(const char *request_json);
 
 #endif /* TBOX_TD_H */

@@ -1,75 +1,30 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Tarang Patel
  *
- * tbox_td.c — implementation of the tdjson bridge.
+ * tbox_td.c — thin wrappers over the td_json_client C API.
  *
- * The shared library is loaded at runtime, never linked: the exe runs from
- * any folder, and companion DLLs (OpenSSL etc.) are found in the directory
- * the library lives in (LOAD_WITH_ALTERED_SEARCH_PATH / dlopen already does
- * that on POSIX).
+ * The symbols come from tdjson.dll via the import library that
+ * cmake/tdjson-vendored.cmake generates from a .def file, so there is no
+ * dlopen/LoadLibrary machinery here. td_execute results are owned by TDLib
+ * until the next call — this wrapper copies before returning.
  */
-#include "tbox_td.h"
+#include "td/tbox_td.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _WIN32
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
-
-struct TBoxTd {
-#ifdef _WIN32
-    HMODULE lib;
-#else
-    void *lib;
-#endif
-    char *(*td_execute)(const char *request);
-    void (*td_set_log_verbosity_level)(int level);
-};
-
-TBoxTd *tbox_td_open(const char *library_path) {
-    if (library_path == NULL || library_path[0] == '\0') {
-        return NULL;
-    }
-    TBoxTd *td = calloc(1, sizeof(TBoxTd));
-    if (td == NULL) {
-        return NULL;
-    }
-#ifdef _WIN32
-    td->lib = LoadLibraryExA(library_path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
-#else
-    td->lib = dlopen(library_path, RTLD_NOW);
-#endif
-    if (td->lib == NULL) {
-        free(td);
-        return NULL;
-    }
-#ifdef _WIN32
-    td->td_execute = (char *(*)(const char *))GetProcAddress(td->lib, "td_execute");
-    td->td_set_log_verbosity_level =
-        (void (*)(int))GetProcAddress(td->lib, "td_set_log_verbosity_level");
-#else
-    td->td_execute = (char *(*)(const char *))dlsym(td->lib, "td_execute");
-    td->td_set_log_verbosity_level = (void (*)(int))dlsym(td->lib, "td_set_log_verbosity_level");
-#endif
-    if (td->td_execute == NULL) {
-        tbox_td_close(td);
-        return NULL;
-    }
-    return td;
+void tbox_td_init(int verbosity) {
+    td_set_log_verbosity_level(verbosity);
 }
 
-char *tbox_td_execute(TBoxTd *td, const char *request_json) {
-    if (td == NULL || td->td_execute == NULL || request_json == NULL) {
+char *tbox_td_execute(const char *request_json) {
+    if (request_json == NULL) {
         return NULL;
     }
-    const char *out = td->td_execute(request_json);
+    const char *out = td_execute(request_json);
     if (out == NULL) {
         return NULL;
     }
-    /* tdjson owns the returned buffer (valid until the next call) — copy it. */
     size_t n = strlen(out);
     char *copy = malloc(n + 1);
     if (copy != NULL) {
@@ -78,24 +33,7 @@ char *tbox_td_execute(TBoxTd *td, const char *request_json) {
     return copy;
 }
 
-void tbox_td_set_verbosity(TBoxTd *td, int level) {
-    if (td != NULL && td->td_set_log_verbosity_level != NULL) {
-        td->td_set_log_verbosity_level(level);
-    }
-}
-
-void tbox_td_close(TBoxTd *td) {
-    if (td == NULL) {
-        return;
-    }
-#ifdef _WIN32
-    if (td->lib != NULL) {
-        FreeLibrary(td->lib);
-    }
-#else
-    if (td->lib != NULL) {
-        dlclose(td->lib);
-    }
-#endif
-    free(td);
+void tbox_td_close(void) {
+    /* tdjson has no global teardown; nothing to release. Kept for ABI
+     * symmetry with the old handle-based API and future cleanup hooks. */
 }

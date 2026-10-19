@@ -6,7 +6,7 @@
  * Subcommands grow one chunk at a time:
  *   tbox version
  *   tbox auth-state <TDLib authorizationState name>   (debug: sees the table)
- *   tbox td-smoke <tdjson library path>
+ *   tbox td-smoke                           load tdjson + sync call
  *   tbox login / whoami / logout                      (upcoming)
  */
 #include <stdio.h>
@@ -52,13 +52,9 @@ static int cmd_auth_state(const char *td_state) {
     return 0;
 }
 
-static int cmd_td_smoke(const char *library_path) {
-    TBoxTd *td = tbox_td_open(library_path);
-    if (td == NULL) {
-        fprintf(stderr, "error: cannot load library '%s'\n", library_path);
-        return 1;
-    }
-    char *out = tbox_td_execute(td, "{\"@type\":\"getLogStream\"}");
+static int cmd_td_smoke(void) {
+    tbox_td_init(1);
+    char *out = tbox_td_execute("{\"@type\":\"getLogStream\"}");
     int rc = 0;
     if (out != NULL) {
         printf("getLogStream -> %s\n", out);
@@ -67,7 +63,7 @@ static int cmd_td_smoke(const char *library_path) {
         fprintf(stderr, "error: td_execute gave no reply\n");
         rc = 1;
     }
-    tbox_td_close(td);
+    tbox_td_close();
     return rc;
 }
 
@@ -87,11 +83,7 @@ int main(int argc, char **argv) {
         return cmd_auth_state(argv[2]);
     }
     if (strcmp(argv[1], "td-smoke") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "usage: tbox td-smoke <tdjson-path>\n");
-            return 2;
-        }
-        return cmd_td_smoke(argv[2]);
+        return cmd_td_smoke();
     }
     print_usage();
     return 2;
