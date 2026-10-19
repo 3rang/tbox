@@ -22,6 +22,8 @@ endif()
 # Release builds get the tag name (v1.2.3) so `tbox --version` says which one.
 set(TBOX_VERSION "${PROJECT_VERSION}" CACHE STRING "Version string printed by tbox --version")
 
+option(TBOX_BUILD_TESTS "Build the unit tests" ON)
+
 if(MSVC)
   add_compile_options(/W4 /utf-8)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
@@ -38,6 +40,7 @@ endif()
 
 # --- core: everything a command needs, without main() -----------------------
 add_library(tbox_core STATIC
+  src/td.c
   src/platform.c
 )
 target_include_directories(tbox_core PUBLIC src)
@@ -51,3 +54,15 @@ endif()
 include(cmake/tdjson.cmake)
 install(FILES LICENSE THIRD_PARTY_NOTICES.md README.md DESTINATION .)
 
+# --- tests: a fake tdjson, no network, no account ----------------------------
+if(TBOX_BUILD_TESTS)
+  enable_testing()
+  add_library(tbox_fake_td STATIC tests/fake_td.c)
+  target_link_libraries(tbox_fake_td PUBLIC tbox_core)
+
+  foreach(t test_td)
+    add_executable(${t} tests/${t}.c)
+    target_link_libraries(${t} PRIVATE tbox_fake_td)
+    add_test(NAME ${t} COMMAND ${t})
+  endforeach()
+endif()
