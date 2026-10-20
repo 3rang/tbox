@@ -36,6 +36,7 @@ typedef struct FakeTd {
     int sent_n;
     char *queue[FAKE_MAX];
     int qn;
+    int qhead; /* events replay FIFO, like td_receive does */
 } FakeTd;
 
 /* The fake needs one file-scope instance because TBoxTdApi callbacks
@@ -53,11 +54,11 @@ static void fake_send(int client_id, const char *request) {
 }
 
 static const char *fake_receive(double timeout) {
-    if (fake_g->qn == 0) {
+    if (fake_g->qhead >= fake_g->qn) {
         FAKE_SLEEP_MS(timeout < 0.05 ? (int)(timeout * 1000.0) : 50);
         return NULL;
     }
-    return fake_g->queue[--fake_g->qn];
+    return fake_g->queue[fake_g->qhead++];
 }
 
 static FakeTd *fake_td_start(int client_id) {
