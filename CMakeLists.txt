@@ -42,6 +42,7 @@ endif()
 add_library(tbox_core STATIC
   src/td.c
   src/config.c
+  src/auth.c
   src/platform.c
 )
 target_include_directories(tbox_core PUBLIC src)
@@ -61,7 +62,7 @@ if(TBOX_BUILD_TESTS)
   add_library(tbox_fake_td STATIC tests/fake_td.c)
   target_link_libraries(tbox_fake_td PUBLIC tbox_core)
 
-  foreach(t test_td test_config)
+  foreach(t test_td test_auth test_config)
     add_executable(${t} tests/${t}.c)
     target_link_libraries(${t} PRIVATE tbox_fake_td)
     add_test(NAME ${t} COMMAND ${t})
