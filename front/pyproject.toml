@@ -19,8 +19,18 @@ dependencies = [
     "qrcode>=7.4",  # draws the login code in the terminal
 ]
 
+# The desktop app needs a window toolkit; the command line does not, so it is
+# an extra you opt into:  pip install -e "front[gui]"
+[project.optional-dependencies]
+gui = [
+    "PySide6>=6.6",  # Qt: the window itself
+]
+
 [project.scripts]
 tbox = "tbox.cli:main"
+
+[project.gui-scripts]
+tbox-gui = "tbox.gui.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

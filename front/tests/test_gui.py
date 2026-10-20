@@ -1,0 +1,215 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Tarang Patel
+"""Tests for the desktop app.
+
+Headless: Qt runs on its "offscreen" platform, and instead of a real account
+the tests push engine events straight into the window. That keeps the whole
+event -> screen mapping covered without a network, an account or a subprocess.
+"""
+
+from __future__ import annotations
+
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from tbox.errors import ConfigError
+
+try:  # the gui extras are optional
+    from PySide6.QtCore import QObject, Signal
+    from PySide6.QtWidgets import QApplication
+
+    from tbox.gui import qrview, theme
+    from tbox.gui.window import MainWindow
+
+    QT_AVAILABLE = True
+except ImportError:  # pragma: no cover - depends on the environment
+    QT_AVAILABLE = False
+
+requires_qt = unittest.skipUnless(
+    QT_AVAILABLE, "PySide6 is not installed (pip install -e front[gui])"
+)
+
+
+class FakeWorker(QObject):
+    """Stands in for the engine thread: same signals, records what was sent."""
+
+    event = Signal(dict)
+    failed = Signal(str)
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__()
+        self.sent: list[str] = []
+        self.stopped = False
+
+    def start(self) -> None:
+        pass
+
+    def send(self, line: str) -> None:
+        self.sent.append(line)
+
+    def stop(self, timeout_ms: int = 0) -> None:
+        self.stopped = True
+
+
+@requires_qt
+class WindowTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+        theme.apply(cls.app)
+
+    def setUp(self) -> None:
+        self.window = MainWindow(autostart=False)
+
+    def tearDown(self) -> None:
+        self.window.close()
+
+    # ---- first run ------------------------------------------------------
+
+    def test_the_connecting_screen_is_up_before_the_flow_starts(self):
+        self.assertEqual(self.window.current_page, "connecting")
+
+    def test_first_run_asks_for_the_keys(self):
+        with mock.patch("tbox.gui.window.config.api_id", side_effect=ConfigError("none")):
+            self.window.start()
+        self.assertEqual(self.window.current_page, "credentials")
+        self.assertIn("app keys", self.window.status_label.text())
+
+    def test_keys_are_validated_before_anything_is_saved(self):
+        saved = mock.Mock()
+        self.window._launch = mock.Mock()
+        with mock.patch("tbox.gui.window.config.save_env", saved):
+            self.window.id_field.setText("not-a-number")
+            self.window.hash_field.setText("a" * 32)
+            self.window._save_credentials()
+
+            self.assertFalse(saved.called)
+            self.assertFalse(self.window.cred_error.isHidden())
+            self.assertIn("numeric", self.window.cred_error.text())
+
+            self.window.id_field.setText("35982092")
+            self.window._save_credentials()
+
+        saved.assert_called_once_with({"TG_API_ID": "35982092", "TG_API_HASH": "a" * 32})
+        self.window._launch.assert_called_once_with("35982092", "a" * 32)
+
+    def test_known_keys_start_the_engine_on_a_worker(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("tbox.gui.window.config.api_id", return_value="1"):
+                with mock.patch("tbox.gui.window.config.api_hash", return_value="a" * 32):
+                    with mock.patch("tbox.gui.window.EngineWorker", FakeWorker):
+                        with mock.patch(
+                            "tbox.gui.window.paths.session_dir",
+                            return_value=Path(tmp) / "session",
+                        ):
+                            self.window.start()
+                            worker = self.window._worker
+
+        self.assertEqual(self.window.current_page, "connecting")
+        self.assertIsInstance(worker, FakeWorker)
+        worker.event.emit({"event": "ready", "user": "Someone"})
+        self.assertEqual(self.window.current_page, "done")
+
+    # ---- the journey ----------------------------------------------------
+
+    def test_a_qr_link_draws_a_scannable_code(self):
+        self.window.handle_event({"event": "qr_link", "link": "tg://login?token=ABC"})
+        self.assertEqual(self.window.current_page, "qr")
+        drawn = self.window.qr_label.pixmap()
+        self.assertEqual(drawn.width(), 300)
+        self.assertEqual(drawn.height(), 300)
+        self.assertIn("Devices", self.window.qr_caption.text())
+
+    def test_a_new_link_replaces_the_old_code(self):
+        self.window.handle_event({"event": "qr_link", "link": "tg://login?token=FIRST"})
+        first = self.window.qr_label.pixmap().toImage()
+        self.window.handle_event({"event": "qr_link", "link": "tg://login?token=SECOND"})
+        second = self.window.qr_label.pixmap().toImage()
+        self.assertNotEqual(first, second)
+
+    def test_two_step_asks_for_the_password_and_sends_it(self):
+        worker = FakeWorker()
+        self.window._worker = worker
+        self.window.handle_event({"event": "password_needed", "hint": "your pet"})
+
+        self.assertEqual(self.window.current_page, "password")
+        self.assertIn("your pet", self.window.password_hint.text())
+
+        self.window.password_field.setText("s3cret")
+        self.window._submit_password()
+
+        self.assertEqual(worker.sent, ["s3cret"])
+        self.assertEqual(self.window.password_field.text(), "")  # never kept around
+
+    def test_a_wrong_password_stays_on_the_password_screen(self):
+        self.window.handle_event({"event": "password_needed", "hint": ""})
+        self.window.password_field.setText("wrong")
+        self.window._submit_password()
+        self.window.handle_event({"event": "error", "message": "PASSWORD_HASH_INVALID"})
+
+        self.assertEqual(self.window.current_page, "password")
+        self.assertIn("did not match", self.window.password_hint.text())
+        self.assertTrue(self.window.pages["password"].isEnabled())
+
+    def test_any_other_error_offers_a_way_back_to_the_keys(self):
+        self.window.handle_event(
+            {"event": "error", "message": "API_ID_INVALID", "code": 400}
+        )
+        self.assertEqual(self.window.current_page, "error")
+        self.assertIn("API_ID_INVALID", self.window.error_text.text())
+        self.assertIn("400", self.window.error_text.text())
+
+        self.window._back_to_keys()
+        self.assertEqual(self.window.current_page, "credentials")
+
+    def test_ready_then_closed_reports_the_account(self):
+        self.window.handle_event({"event": "ready", "user": "Tarang Patel"})
+        self.assertEqual(self.window.current_page, "done")
+        self.assertIn("Tarang Patel", self.window.done_title.text())
+
+        self.window.handle_event({"event": "closed"})
+        self.assertEqual(self.window.current_page, "done")
+        self.assertIn("cleanly", self.window.done_note.text())
+
+    def test_the_session_is_already_signed_in_goes_straight_to_done(self):
+        # a second start: no QR at all, just ready -> closed
+        self.window.handle_event({"event": "auth_state", "state": "READY"})
+        self.window.handle_event({"event": "ready", "user": "Tarang Patel"})
+        self.window.handle_event({"event": "closed"})
+        self.assertEqual(self.window.current_page, "done")
+        self.assertIn("Tarang Patel", self.window.done_title.text())
+
+    def test_closing_stops_the_engine(self):
+        worker = FakeWorker()
+        self.window._worker = worker
+        self.window.close()
+        self.assertTrue(worker.stopped)
+
+
+@requires_qt
+class PresentationTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.app = QApplication.instance() or QApplication([])
+
+    def test_the_stylesheet_has_no_leftover_tokens(self):
+        css = theme.stylesheet()
+        self.assertNotIn("@", css)
+        self.assertIn(theme.ACCENT, css)
+
+    def test_the_qr_image_is_scaled_without_smoothing(self):
+        drawn = qrview.pixmap("tg://login?token=SMOOTH", 240)
+        self.assertEqual(drawn.width(), 240)
+        # nearest-neighbour keeps edges hard: only two shades survive scaling
+        image = drawn.toImage()
+        shades = {image.pixelColor(x, 0).name() for x in range(0, 240, 3)}
+        self.assertLessEqual(len(shades), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
