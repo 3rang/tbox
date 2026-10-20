@@ -4,6 +4,7 @@
  * test_tbox_td.c — smoke test against the real linked tdjson runtime.
  * CMake stages the DLLs next to the exe, so no path arguments are needed.
  */
+#undef NDEBUG /* keep assert() alive in Release (/DNDEBUG) builds */
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
