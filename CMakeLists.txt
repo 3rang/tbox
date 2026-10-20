@@ -13,15 +13,13 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 add_library(cjson STATIC third_party/cjson/cJSON.c)
 target_include_directories(cjson PUBLIC third_party/cjson)
 
-# qrcodegen (vendored, MIT) — terminal QR rendering for login.
-add_library(qrcodegen STATIC third_party/qrcodegen/qrcodegen.c)
-target_include_directories(qrcodegen PUBLIC third_party/qrcodegen)
-
-# tbox_td_core - auth FSM + client loop. Injectable TBoxTdApi: no native
-# references, so its tests run without the real dll (CI-friendly).
+# tbox_td_core - auth FSM + client loop + the UI-free session engine.
+# Injectable TBoxTdApi: no native references, so its tests run without the
+# real dll (CI-friendly).
 add_library(tbox_td_core STATIC
   src/td/tbox_td_auth.c
   src/td/tbox_td_client.c
+  src/service/tbox_session.c
 )
 target_include_directories(tbox_td_core PUBLIC src)
 target_link_libraries(tbox_td_core PUBLIC cjson)
@@ -38,9 +36,8 @@ add_executable(tbox
   src/main.c
   src/cli/cli.c
   src/cmd/cmd.c
-  src/qr/qr.c
 )
-target_link_libraries(tbox PRIVATE tbox_td_core tbox_td qrcodegen)
+target_link_libraries(tbox PRIVATE tbox_td_core tbox_td)
 
 enable_testing()
 
@@ -56,6 +53,10 @@ add_test(NAME td_auth_flow COMMAND test_td_auth)
 add_executable(test_td_client tests/test_td_client.c)
 target_link_libraries(test_td_client PRIVATE tbox_td_core)
 add_test(NAME td_client_flow COMMAND test_td_client)
+
+add_executable(test_session tests/test_session.c)
+target_link_libraries(test_session PRIVATE tbox_td_core)
+add_test(NAME session_flow COMMAND test_session)
 
 # Vendored TDLib: link the td_json_client C API and stage the DLLs beside
 # every binary that uses it. TBOX_TDJSON_TARGETS must be set BEFORE the

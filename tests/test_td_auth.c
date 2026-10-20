@@ -7,6 +7,7 @@
 #undef NDEBUG /* keep assert() alive in Release (/DNDEBUG) builds */
 #include <assert.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "td/tbox_td_auth.h"
 
@@ -71,6 +72,11 @@ int main(void) {
     assert(step(&s, "authorizationStateWaitCode", TBOX_AUTH_FAILED) ==
            TBOX_AUTH_ACT_FATAL);
     assert(tbox_auth_next(TBOX_AUTH_START, NULL).action == TBOX_AUTH_ACT_FATAL);
+
+    /* 7. the name lookups the session engine reports are total */
+    assert(strcmp(tbox_auth_state_name(TBOX_AUTH_WAIT_QR), "WAIT_QR") == 0);
+    assert(strcmp(tbox_auth_action_name(TBOX_AUTH_ACT_SHOW_QR), "SHOW_QR") == 0);
+    assert(strcmp(tbox_auth_state_name((TBoxAuthState)99), "?") == 0);
 
     printf("td_auth flow OK\n");
     return 0;

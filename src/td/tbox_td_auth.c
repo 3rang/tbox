@@ -40,3 +40,22 @@ TBoxAuthTransition tbox_auth_next(TBoxAuthState current, const char *td_state) {
     }
     return fail;
 }
+
+static const char *STATE_NAMES[] = {
+    "START", "WAIT_PARAMS", "WAIT_PHONE", "WAIT_QR", "WAIT_PASSWORD",
+    "READY", "CLOSING", "CLOSED", "FAILED",
+};
+static const char *ACTION_NAMES[] = {
+    "NONE", "REQUEST_PARAMS", "REQUEST_QR", "SHOW_QR", "ASK_PASSWORD",
+    "AUTHORIZED", "CLOSED", "FATAL",
+};
+
+const char *tbox_auth_state_name(TBoxAuthState state) {
+    size_t n = sizeof(STATE_NAMES) / sizeof(STATE_NAMES[0]);
+    return ((size_t)state < n) ? STATE_NAMES[state] : "?";
+}
+
+const char *tbox_auth_action_name(TBoxAuthAction action) {
+    size_t n = sizeof(ACTION_NAMES) / sizeof(ACTION_NAMES[0]);
+    return ((size_t)action < n) ? ACTION_NAMES[action] : "?";
+}

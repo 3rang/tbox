@@ -16,7 +16,7 @@ static void print_usage(void) {
            "  tbox version\n"
            "  tbox auth-state <authorizationState name>   show FSM step\n"
            "  tbox td-smoke                               load tdjson + sync call\n"
-           "  tbox login <session-dir> <api-id> <api-hash>   QR login (debug)\n"
+           "  tbox login <session-dir> <api-id> <api-hash>   drive auth (json events)\n"
            "  (whoami, logout are coming)\n",
            TBOX_VERSION);
 }

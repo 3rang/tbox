@@ -26,7 +26,7 @@
 #define FAKE_SLEEP_MS(ms) usleep((ms) * 1000)
 #endif
 
-#define FAKE_MAX 8
+#define FAKE_MAX 16
 
 typedef struct FakeTd {
     TBoxTdApi api;

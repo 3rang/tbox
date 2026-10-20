@@ -48,4 +48,8 @@ typedef struct TBoxAuthTransition {
 /* One step: TDLib state name in (NULL = invalid), transition out. */
 TBoxAuthTransition tbox_auth_next(TBoxAuthState current, const char *td_state);
 
+/* Display/log names for the enums; never NULL ("?" if out of range). */
+const char *tbox_auth_state_name(TBoxAuthState state);
+const char *tbox_auth_action_name(TBoxAuthAction action);
+
 #endif /* TBOX_TD_AUTH_H */
