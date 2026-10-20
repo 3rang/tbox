@@ -44,6 +44,7 @@ add_library(tbox_core STATIC
   src/config.c
   src/auth.c
   src/chat.c
+  src/session.c
   src/platform.c
 )
 target_include_directories(tbox_core PUBLIC src)
@@ -53,8 +54,23 @@ if(UNIX)
   target_link_libraries(tbox_core PUBLIC ${CMAKE_DL_LIBS})
 endif()
 
-# --- the TDLib runtime -------------------------
+# --- the executable ----------------------------------------------------------
+add_executable(tbox
+  src/main.c
+  src/cmd_login.c
+  src/cmd_logout.c
+  src/cmd_me.c
+)
+target_link_libraries(tbox PRIVATE tbox_core)
+
+# --- the TDLib runtime, staged beside the executable -------------------------
 include(cmake/tdjson.cmake)
+add_custom_command(TARGET tbox POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TBOX_TDJSON_FILES} $<TARGET_FILE_DIR:tbox>
+  COMMENT "Staging libtdjson beside tbox")
+
+install(TARGETS tbox RUNTIME DESTINATION bin)
+install(FILES ${TBOX_TDJSON_FILES} DESTINATION bin)
 install(FILES LICENSE THIRD_PARTY_NOTICES.md README.md DESTINATION .)
 
 # --- tests: a fake tdjson, no network, no account ----------------------------
