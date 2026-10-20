@@ -18,6 +18,7 @@
 /* States the FSM can be in (mirrors TDLib's authorizationState values). */
 typedef enum TBoxAuthState {
     TBOX_AUTH_START = 0,
+    TBOX_AUTH_WAIT_PARAMS,    /* tdlib asks for setTdlibParameters */
     TBOX_AUTH_WAIT_PHONE,     /* needs requestQrCodeAuthentication */
     TBOX_AUTH_WAIT_QR,        /* QR link shown, waiting for scan */
     TBOX_AUTH_WAIT_PASSWORD,  /* 2FA: cloud password needed */
@@ -30,6 +31,7 @@ typedef enum TBoxAuthState {
 /* What the caller must DO after a transition. */
 typedef enum TBoxAuthAction {
     TBOX_AUTH_ACT_NONE = 0,
+    TBOX_AUTH_ACT_REQUEST_PARAMS, /* send setTdlibParameters (caller guards repeats) */
     TBOX_AUTH_ACT_REQUEST_QR, /* send requestQrCodeAuthentication */
     TBOX_AUTH_ACT_SHOW_QR,    /* the update carried a fresh QR link */
     TBOX_AUTH_ACT_ASK_PASSWORD,

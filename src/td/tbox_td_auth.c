@@ -15,6 +15,7 @@ typedef struct TBoxAuthRow {
 
 static const TBoxAuthRow TABLE[] = {
     /*  name                                              next-state            action                       */
+    { "authorizationStateWaitTdlibParameters",         { TBOX_AUTH_WAIT_PARAMS,   TBOX_AUTH_ACT_REQUEST_PARAMS} },
     { "authorizationStateWaitPhoneNumber",             { TBOX_AUTH_WAIT_PHONE,    TBOX_AUTH_ACT_REQUEST_QR   } },
     { "authorizationStateWaitOtherDeviceConfirmation", { TBOX_AUTH_WAIT_QR,       TBOX_AUTH_ACT_SHOW_QR      } },
     { "authorizationStateWaitPassword",                { TBOX_AUTH_WAIT_PASSWORD, TBOX_AUTH_ACT_ASK_PASSWORD } },

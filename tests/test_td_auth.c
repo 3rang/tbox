@@ -4,6 +4,7 @@
  * test_td_auth.c — walks the proven QR login path through the FSM.
  * No tdjson needed: the table is pure logic, so this runs anywhere.
  */
+#undef NDEBUG /* keep assert() alive in Release (/DNDEBUG) builds */
 #include <assert.h>
 #include <stdio.h>
 
@@ -18,8 +19,14 @@ static TBoxAuthAction step(TBoxAuthState *s, const char *td_state, TBoxAuthState
 }
 
 int main(void) {
-    /* 1. the proven QR flow, start to finish */
+    /* 0. tdlib first asks for parameters; a RE-entry (we already sent
+     *    them) is the caller's signal that it rejected them */
     TBoxAuthState s = TBOX_AUTH_START;
+    assert(step(&s, "authorizationStateWaitTdlibParameters", TBOX_AUTH_WAIT_PARAMS) ==
+           TBOX_AUTH_ACT_REQUEST_PARAMS);
+
+    /* 1. the proven QR flow, start to finish */
+    s = TBOX_AUTH_START;
     assert(step(&s, "authorizationStateWaitPhoneNumber", TBOX_AUTH_WAIT_PHONE) ==
            TBOX_AUTH_ACT_REQUEST_QR);
     assert(step(&s, "authorizationStateWaitOtherDeviceConfirmation", TBOX_AUTH_WAIT_QR) ==

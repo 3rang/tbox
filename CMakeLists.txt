@@ -13,7 +13,11 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 add_library(cjson STATIC third_party/cjson/cJSON.c)
 target_include_directories(cjson PUBLIC third_party/cjson)
 
-# tbox_td_core — auth FSM + client loop. Injectable TBoxTdApi: no native
+# qrcodegen (vendored, MIT) — terminal QR rendering for login.
+add_library(qrcodegen STATIC third_party/qrcodegen/qrcodegen.c)
+target_include_directories(qrcodegen PUBLIC third_party/qrcodegen)
+
+# tbox_td_core - auth FSM + client loop. Injectable TBoxTdApi: no native
 # references, so its tests run without the real dll (CI-friendly).
 add_library(tbox_td_core STATIC
   src/td/tbox_td_auth.c
@@ -29,8 +33,14 @@ add_library(tbox_td STATIC
   src/td/tbox_td_api.c
 )
 target_include_directories(tbox_td PUBLIC src)
-add_executable(tbox src/main.c)
-target_link_libraries(tbox PRIVATE tbox_td_core tbox_td)
+
+add_executable(tbox
+  src/main.c
+  src/cli/cli.c
+  src/cmd/cmd.c
+  src/qr/qr.c
+)
+target_link_libraries(tbox PRIVATE tbox_td_core tbox_td qrcodegen)
 
 enable_testing()
 
