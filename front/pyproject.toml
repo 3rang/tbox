@@ -25,6 +25,10 @@ dependencies = [
 gui = [
     "PySide6>=6.6",  # Qt: the window itself
 ]
+pack = [
+    "pyinstaller>=6.6",  # freezes the app into one .exe
+    "pillow>=10",        # draws the app icon at build time only
+]
 
 [project.scripts]
 tbox = "tbox.cli:main"
@@ -34,6 +38,11 @@ tbox-gui = "tbox.gui.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The compiled engine and its DLLs are copied in by build.ps1, so a wheel is
+# a complete app rather than a thin client that needs a compiler.
+[tool.setuptools.package-data]
+tbox = ["bin/*"]
 
 [tool.setuptools.dynamic]
 version = { attr = "tbox.__version__" }
