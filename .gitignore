@@ -24,5 +24,8 @@ session.lock
 .cache/
 session/
 
+# Engine copied into the package by build.ps1 (built, not source)
+front/src/tbox/bin/
+
 # Local-only folders (never pushed)
 archive/
