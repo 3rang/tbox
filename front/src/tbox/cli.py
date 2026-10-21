@@ -105,7 +105,7 @@ def cmd_login(args: argparse.Namespace) -> int:
 
     session = paths.session_dir()
     say(f"session: {session}")
-    with Core.start("login", str(session), api_id, api_hash) as core:
+    with Core.start_login(str(session), api_id, api_hash) as core:
         return login_screen(core, verbose=args.verbose)
 
 

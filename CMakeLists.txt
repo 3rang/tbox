@@ -106,8 +106,9 @@ add_executable(tbox-engine
   src/main.c
   src/cli/cli.c
   src/cmd/cmd.c
+  src/cmd/serve.c
 )
-target_link_libraries(tbox-engine PRIVATE tbox_td_core tbox_td)
+target_link_libraries(tbox-engine PRIVATE tbox_td_core tbox_td tbox_engine)
 
 enable_testing()
 
@@ -140,6 +141,14 @@ target_link_libraries(test_engine PRIVATE tbox_engine)
 add_test(NAME engine_loop COMMAND test_engine)
 if(MSVC)
   target_compile_options(test_engine PRIVATE /W4)
+endif()
+
+# P1 guard (spec 5.1): secrets must never reach argv. A source grep, run as
+# a test so it fails the build rather than a review.
+if(WIN32)
+  add_test(NAME no_argv_secrets
+    COMMAND powershell -ExecutionPolicy Bypass -File
+            "${CMAKE_SOURCE_DIR}/scripts/check-no-argv-secrets.ps1")
 endif()
 
 # Vendored TDLib: link the td_json_client C API and stage the DLLs beside

@@ -84,6 +84,47 @@ class EventStreamTest(unittest.TestCase):
         self.assertIsNotNone(core.stop())  # already exited: harmless
 
 
+class StartLoginTest(unittest.TestCase):
+    """Credentials are a secret, so they travel on stdin, never in argv."""
+
+    # A fake "login" engine: it prints its own argv, then echoes the first
+    # stdin line as an event, so the test can see where the secret went.
+    SCRIPT = (
+        "import json, sys\n"
+        "print(json.dumps({'event': 'argv', 'argv': sys.argv[1:]}), flush=True)\n"
+        "line = sys.stdin.readline().strip()\n"
+        "print(json.dumps({'event': 'creds', 'creds': json.loads(line)}), flush=True)\n"
+    )
+
+    def test_credentials_arrive_on_stdin_and_not_in_argv(self):
+        with mock.patch.object(Core, "start", return_value=fake_engine(self.SCRIPT)):
+            core = Core.start_login("/tmp/session", "1234567", "a" * 32)
+        events = list(core.events())
+        core.stop()
+        # none of the secrets leaked into argv (the fake echoes its own argv)
+        argv_blob = " ".join(events[0]["argv"])
+        self.assertNotIn("a" * 32, argv_blob)
+        self.assertNotIn("1234567", argv_blob)
+        self.assertEqual(
+            events[1],
+            {
+                "event": "creds",
+                "creds": {
+                    "session_dir": "/tmp/session",
+                    "api_id": "1234567",
+                    "api_hash": "a" * 32,
+                },
+            },
+        )
+
+    def test_optional_db_key_is_forwarded(self):
+        with mock.patch.object(Core, "start", return_value=fake_engine(self.SCRIPT)):
+            core = Core.start_login("/tmp/session", "1", "b" * 32, db_key="a2V5")
+        events = list(core.events())
+        core.stop()
+        self.assertEqual(events[1]["creds"]["db_key"], "a2V5")
+
+
 class ConfigTest(unittest.TestCase):
     def test_env_file_parsing(self):
         with tempfile.TemporaryDirectory() as tmp:

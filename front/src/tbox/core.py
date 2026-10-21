@@ -53,6 +53,31 @@ class Core:
             raise CoreError(f"could not start {argv[0]}: {exc}") from exc
         return cls(proc)
 
+    @classmethod
+    def start_login(
+        cls,
+        session_dir: str,
+        api_id: str,
+        api_hash: str,
+        db_key: str | None = None,
+    ) -> "Core":
+        """Start the dev ``login`` engine and hand it credentials on stdin.
+
+        Credentials are a secret, so they never travel in argv (spec 5.1):
+        the command reads exactly one JSON object from stdin before it does
+        anything else. db_key is optional (the TDLib database key, S5).
+        """
+        core = cls.start("login")
+        creds: dict[str, str] = {
+            "session_dir": session_dir,
+            "api_id": api_id,
+            "api_hash": api_hash,
+        }
+        if db_key is not None:
+            creds["db_key"] = db_key
+        core.send(json.dumps(creds))
+        return core
+
     def events(self) -> Iterator[dict]:
         """Yield one dict per event, until the engine exits.
 

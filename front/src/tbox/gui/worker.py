@@ -27,12 +27,12 @@ class EngineWorker(QThread):
 
     def __init__(self, session_dir: str, api_id: str, api_hash: str, parent=None) -> None:
         super().__init__(parent)
-        self._args = ("login", session_dir, api_id, api_hash)
+        self._args = (session_dir, api_id, api_hash)
         self._core: Core | None = None
 
     def run(self) -> None:  # executes on the worker thread
         try:
-            self._core = Core.start(*self._args)
+            self._core = Core.start_login(*self._args)
         except TboxError as exc:
             self.failed.emit(str(exc))
             return

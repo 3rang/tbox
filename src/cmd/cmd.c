@@ -76,21 +76,45 @@ static void event_line(const char *event, const char *key, int code,
     cJSON_Delete(o);
 }
 
-int tbox_cmd_login(const char *session_dir, const char *arg_api_id, const char *api_hash) {
-    if (session_dir == NULL || session_dir[0] == '\0' ||
-        arg_api_id == NULL || arg_api_id[0] == '\0' ||
-        api_hash == NULL || api_hash[0] == '\0') {
-        fprintf(stderr, "usage: tbox login <session-dir> <api-id> <api-hash>\n");
+int tbox_cmd_login(void) {
+    /* Credentials come from one JSON line on stdin (P1: never argv). The
+     * line is not echoed anywhere and the api_hash/db_key are used once. */
+    char creds[2048];
+    if (fgets(creds, sizeof creds, stdin) == NULL) {
+        fprintf(stderr, "error: expected credentials JSON on stdin\n");
         return TBOX_UNKNOWN_COMMAND;
     }
-    long api_id = strtol(arg_api_id, NULL, 10);
+    cJSON *cj = cJSON_Parse(creds);
+    if (cj == NULL) {
+        fprintf(stderr, "error: credentials are not valid JSON\n");
+        return TBOX_UNKNOWN_COMMAND;
+    }
+    const char *api_id_s = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(cj, "api_id"));
+    const char *api_hash = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(cj, "api_hash"));
+    const char *db_key = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(cj, "db_key"));
+    const char *session_dir = cJSON_GetStringValue(
+        cJSON_GetObjectItemCaseSensitive(cj, "session_dir"));
+
+    if (session_dir == NULL || session_dir[0] == '\0' ||
+        api_id_s == NULL || api_hash == NULL || api_hash[0] == '\0') {
+        fprintf(stderr,
+                "error: credentials need session_dir, api_id and api_hash\n");
+        cJSON_Delete(cj);
+        return TBOX_UNKNOWN_COMMAND;
+    }
+    long api_id = strtol(api_id_s, NULL, 10);
     if (api_id <= 0) {
-        fprintf(stderr, "error: api-id '%s' is not a valid app id\n", arg_api_id);
+        fprintf(stderr, "error: api_id is not a valid app id\n");
+        cJSON_Delete(cj);
         return TBOX_ERROR;
     }
 
-    TBoxSession *s = tbox_session_start(tbox_td_api(), session_dir, api_id, api_hash,
-                                        NULL);
+    TBoxSession *s = tbox_session_start(tbox_td_api(), session_dir, api_id,
+                                        api_hash, db_key);
+    cJSON_Delete(cj); /* the secrets do not outlive this call */
     if (s == NULL) {
         fprintf(stderr, "error: could not start the tdlib session\n");
         return TBOX_ERROR;
@@ -119,6 +143,7 @@ int tbox_cmd_login(const char *session_dir, const char *arg_api_id, const char *
             char pw[256];
             if (fgets(pw, sizeof pw, stdin) == NULL) {
                 event_line("cancelled", NULL, 0, NULL);
+                free(ev.data);
                 goto done;
             }
             pw[strcspn(pw, "\r\n")] = '\0';
@@ -132,17 +157,23 @@ int tbox_cmd_login(const char *session_dir, const char *arg_api_id, const char *
             break;
         case TBOX_SESSION_EV_CLOSED:
             event_line("closed", NULL, 0, NULL);
+            free(ev.data);
             goto done;
         case TBOX_SESSION_EV_ERROR:
             event_line("error", "message", ev.code, ev.data);
             /* a rejected 2FA password is recoverable: tdlib asks again,
              * which reaches the front as a fresh password_needed */
-            if (strcmp(ev.data, "PASSWORD_HASH_INVALID") != 0) {
+            if (ev.data == NULL ||
+                strcmp(ev.data, "PASSWORD_HASH_INVALID") != 0) {
+                free(ev.data);
                 rc = TBOX_ERROR;
                 goto done;
             }
             break;
+        default:
+            break; /* transfer/sync events belong to the engine, not this command */
         }
+        free(ev.data);
     }
 
 done:

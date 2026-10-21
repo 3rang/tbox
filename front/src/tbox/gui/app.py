@@ -91,7 +91,7 @@ def _engine_runs(note) -> bool:
     it runs at all (DLLs found, event stream readable), not that it logs in."""
     work = tempfile.mkdtemp(prefix="tbox-selftest-")
     try:
-        with Core.start("login", work, "123", "bogus") as core:
+        with Core.start_login(work, "123", "bogus") as core:
             deadline = time.monotonic() + 30
             for event in core.events():
                 if event.get("event") == "error":
