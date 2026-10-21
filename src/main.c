@@ -19,6 +19,7 @@ static const struct {
     { "login", cmd_login, "login [--api-id ID --api-hash HASH]", "sign in (once); asks for phone, code, password" },
     { "logout", cmd_logout, "logout", "sign out and forget the session" },
     { "me", cmd_me, "me", "show the logged-in account" },
+    { "search", cmd_search, "search <query>", "find chats by title or public @username" },
 };
 
 static void usage(FILE *out) {
