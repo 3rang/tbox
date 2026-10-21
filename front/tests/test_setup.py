@@ -11,7 +11,33 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import keyring
+from keyring.backend import KeyringBackend
+
 from tbox import cli, config
+
+
+class MemoryKeyring(KeyringBackend):
+    """An in-process stand-in for the OS store.
+
+    The real Windows Credential Manager must never be touched by a test:
+    writing a fake api_hash there would clobber the owner's real one.
+    """
+
+    priority = 1
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.store: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service, username):
+        return self.store.get((service, username))
+
+    def set_password(self, service, username, password):
+        self.store[(service, username)] = password
+
+    def delete_password(self, service, username):
+        self.store.pop((service, username), None)
 
 
 def run_setup(env_file: Path, api_id: str, api_hash: str) -> tuple[int, str]:
@@ -25,6 +51,15 @@ def run_setup(env_file: Path, api_id: str, api_hash: str) -> tuple[int, str]:
 
 
 class SetupTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._old_keyring = keyring.get_keyring()
+        keyring.set_keyring(MemoryKeyring())
+        config.clear_env_cache()
+
+    def tearDown(self) -> None:
+        keyring.set_keyring(self._old_keyring)
+        config.clear_env_cache()
+
     def test_setup_saves_credentials_where_login_will_read_them(self):
         with tempfile.TemporaryDirectory() as tmp:
             env_file = Path(tmp) / ".env"
@@ -33,10 +68,9 @@ class SetupTest(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("my.telegram.org/apps", text)
             self.assertIn(str(env_file), text)
-            self.assertEqual(
-                config.load_env(env_file),
-                {"TG_API_ID": "35982092", "TG_API_HASH": "a" * 32},
-            )
+            # the api_hash goes to the secure store (S3), not the .env file
+            self.assertEqual(config.load_env(env_file), {"TG_API_ID": "35982092"})
+            self.assertEqual(config.api_hash(), "a" * 32)
 
     def test_setup_keeps_settings_it_does_not_own(self):
         with tempfile.TemporaryDirectory() as tmp:

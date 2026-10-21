@@ -13,9 +13,10 @@ import argparse
 import getpass
 import json
 import sys
+import threading
 
 from . import config, paths, qr
-from .core import Core
+from .engine_client import EngineClient, EngineError
 from .errors import TboxError
 
 # States that would only add noise: each has a message of its own already.
@@ -33,58 +34,98 @@ def say(message: str = "") -> None:
     print(message, flush=True)
 
 
-def login_screen(core: Core, verbose: bool = False) -> int:
-    """Render a login session driven by an already-started engine.
+def login_screen(
+    core,
+    verbose: bool = False,
+    prompt_password=None,
+) -> int:
+    """Drive a login and render it, returning an exit code.
 
-    Kept as a function of the event stream on purpose: tests drive it with a
-    scripted engine instead of a real account.
+    Accepts either an :class:`~tbox.engine_client.EngineClient` (long-running
+    ``serve``) or the legacy :class:`~tbox.core.Core` (used by tests with a
+    scripted engine).
     """
+    if prompt_password is None:
+        prompt_password = lambda hint: getpass.getpass(
+            "Your Telegram two-step password: "
+        )
+
     say("Waiting for Telegram...")
-    linked = False
-    for event in core.events():
+    state = {"linked": False, "error": None}
+    done = threading.Event()
+
+    def handle_event(event: dict) -> None:
         if verbose:
             say("  " + json.dumps(event, ensure_ascii=False))
         name = event.get("event")
+        data = event.get("data") or {}
 
-        if name == "auth_state":
-            state = str(event.get("state", ""))
-            if state not in _QUIET_STATES:
-                say(f"  state: {state}")
+        if name in ("auth.state", "auth_state"):
+            value = str(data.get("state", event.get("state", "")))
+            if value not in _QUIET_STATES:
+                say(f"  state: {value}")
+            if value == "CLOSED":
+                done.set()
 
-        elif name == "closed":
-            # the engine's own confirmation, and the last event of a session
+        elif name in ("auth.closed", "closed"):
             say("Session closed.")
+            done.set()
 
-        elif name == "qr_link":
+        elif name in ("auth.qr", "qr_link"):
+            link = data.get("link", event.get("link", ""))
             say()
-            say(qr.render(str(event.get("link", ""))))
+            say(qr.render(str(link)))
             say()
             say("Scan this with your phone: Settings > Devices > Link Desktop Device")
             say("(the code refreshes by itself, so just scan the newest one)")
 
-        elif name == "password_needed":
-            hint = str(event.get("hint", ""))
+        elif name in ("auth.password_needed", "password_needed"):
+            hint = str(data.get("hint", event.get("hint", "")))
             if hint:
                 say(f"  hint: {hint}")
-            password = getpass.getpass("Your Telegram two-step password: ")
-            core.send(password)
+            try:
+                if hasattr(core, "auth_password"):
+                    core.auth_password(prompt_password(hint))
+                else:
+                    core.send(prompt_password(hint))
+            except TboxError as exc:
+                state["error"] = str(exc)
+                done.set()
 
-        elif name == "ready":
-            linked = True
-            who = str(event.get("user", "")).strip()
+        elif name in ("auth.ready", "ready"):
+            state["linked"] = True
+            who = str(data.get("display_name", event.get("user", ""))).strip()
             say(f"Linked as {who}." if who else "Linked.")
 
-        elif name == "error":
-            code = event.get("code")
-            message = str(event.get("message", "unknown error"))
-            say(f"error: {message}" + (f" (code {code})" if code else ""))
-            return 1
+        elif name in ("engine.error", "error"):
+            message = str(data.get("message", event.get("message", "unknown error")))
+            state["error"] = message
+            say(f"error: {message}" + (f" (code {data.get('code', event.get('code'))})" if data.get("code") is not None or event.get("code") is not None else ""))
+            done.set()
 
         elif name == "cancelled":
             say("Cancelled.")
-            return 1
+            done.set()
 
-    return 0 if linked else 1
+    if hasattr(core, "set_event_handler"):
+        core.set_event_handler(handle_event)
+        while not done.is_set():
+            done.wait(0.25)
+    elif hasattr(core, "events"):
+        # legacy Core with a blocking event stream (tests)
+        try:
+            for event in core.events():
+                handle_event(event)
+                if done.is_set():
+                    break
+        except Exception as exc:
+            state["error"] = str(exc)
+    else:
+        raise TypeError("login_screen needs a Core or an EngineClient")
+
+    if state["error"] is not None and not state["linked"]:
+        return 1
+    return 0 if state["linked"] else 1
 
 
 def cmd_login(args: argparse.Namespace) -> int:
@@ -103,10 +144,31 @@ def cmd_login(args: argparse.Namespace) -> int:
         api_id = config.api_id()
         api_hash = config.api_hash()
 
+    warn = config.migration_warning()
+    if warn:
+        say(f"warning: {warn}")
+
     session = paths.session_dir()
     say(f"session: {session}")
-    with Core.start_login(str(session), api_id, api_hash) as core:
-        return login_screen(core, verbose=args.verbose)
+    with EngineClient(str(session)) as client:
+        client.start()
+        client.auth_start(api_id, api_hash, config.db_key())
+        return login_screen(client, verbose=args.verbose)
+
+
+def cmd_logout(args: argparse.Namespace) -> int:
+    """Log out on Telegram, leaving this computer's data alone."""
+    session = paths.session_dir()
+    try:
+        with EngineClient(str(session)) as client:
+            client.start()
+            client.auth_logout()
+    except TboxError as exc:
+        say(f"error: {exc}")
+        return 1
+    say("Logged out. Telegram sessions for this app are ended;")
+    say("use 'tbox setup' then 'tbox login' to link again.")
+    return 0
 
 
 def ask(label: str, current: str, secret: bool = False, validate=None) -> str:
@@ -128,7 +190,11 @@ def ask(label: str, current: str, secret: bool = False, validate=None) -> str:
 
 
 def cmd_setup(args: argparse.Namespace) -> int:
-    """Ask for the Telegram app credentials and save them to .env."""
+    """Ask for the Telegram app credentials and save them.
+
+    The api_id goes to .env; the api_hash goes to the OS secure store
+    (spec S3), so it never lands in a plain file.
+    """
     say("tbox needs your own Telegram API credentials (they are free):")
     say("  1. open https://my.telegram.org/apps")
     say("  2. create (or open) an application")
@@ -141,15 +207,24 @@ def cmd_setup(args: argparse.Namespace) -> int:
     )
     api_hash = ask(
         "api_hash",
-        existing.get("TG_API_HASH", ""),
+        config.api_hash() if _hash_known() else "",
         secret=True,
         validate=config.validate_api_hash,
     )
     saved = config.save_env({"TG_API_ID": api_id, "TG_API_HASH": api_hash}, path=env_file)
     say()
     say(f"saved {saved}")
-    say("(that file stays on this computer; it is never committed)")
+    say("the api_hash is kept in your operating system's secure store")
     return 0
+
+
+def _hash_known() -> bool:
+    """True when an api_hash is already available (env, store or .env)."""
+    try:
+        config.api_hash()
+        return True
+    except TboxError:
+        return False
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -174,6 +249,11 @@ def build_parser() -> argparse.ArgumentParser:
         "setup", help="save the Telegram API credentials tbox needs"
     )
     setup.set_defaults(func=cmd_setup)
+
+    logout = commands.add_parser(
+        "logout", help="log out on Telegram (local data is kept)"
+    )
+    logout.set_defaults(func=cmd_logout)
 
     return parser
 

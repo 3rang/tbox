@@ -86,7 +86,8 @@ list, ...) come next, built on the same engine.
 
 | Path | What it is |
 |---|---|
-| `%LOCALAPPDATA%\tbox\.env` | your api_id / api_hash (local only, never committed) |
+| `%LOCALAPPDATA%\tbox\.env` | your api_id (local only, never committed) |
+| your OS secure store (service `tbox`) | the api_hash and the TDLib database key |
 | `%LOCALAPPDATA%\tbox\session\` | TDLib's database — deleting it means scanning again |
 | `build\` | the compiled engine and its test binaries (gitignored) |
 | `front\src\tbox\bin\` | the engine copied into the package by `build.ps1` |

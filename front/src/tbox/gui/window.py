@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QStackedWidget,
@@ -186,6 +187,10 @@ class MainWindow(QMainWindow):
         self.done_badge = _label("✓", "Badge")
         self.done_title = _label("Linked", "Title")
         self.done_note = _label("", "Ok")
+        logout_btn = _button("Log out of Telegram")
+        logout_btn.clicked.connect(self._logout)
+        remove_data = _button("Remove local data")
+        remove_data.clicked.connect(self._remove_local_data)
         close = _button("Close", primary=True)
         close.clicked.connect(self.close)
         self.pages["done"] = _page(
@@ -193,6 +198,8 @@ class MainWindow(QMainWindow):
             self.done_title,
             self.done_note,
             _label("This computer stays signed in - the next start goes straight in.", "Subtitle"),
+            logout_btn,
+            remove_data,
             close,
         )
 
@@ -241,20 +248,29 @@ class MainWindow(QMainWindow):
 
     def start(self) -> None:
         """Log in, asking for keys first when there are none yet."""
+        config.migrate_env_secrets()
+        note = config.migration_warning()
         try:
             api_id, api_hash = config.api_id(), config.api_hash()
         except TboxError:
             self._prefill_if_known()
             self.show_page("credentials")
-            self.status("First run: the app keys are needed once.")
+            msg = "First run: the app keys are needed once."
+            if note:
+                msg = f"{note} {msg}"
+            self.status(msg)
             return
+        if note:
+            self.status(note)
         self._launch(api_id, api_hash)
 
     def _launch(self, api_id: str, api_hash: str) -> None:
         self._stop_worker()
         self.show_page("connecting")
         self.status("Connecting to Telegram...")
-        self._worker = EngineWorker(str(paths.session_dir()), api_id, api_hash, self)
+        self._worker = EngineWorker(
+            str(paths.session_dir()), api_id, api_hash, config.db_key(), self
+        )
         self._worker.event.connect(self.handle_event)
         self._worker.failed.connect(self.on_failed)
         self._worker.start()
@@ -262,9 +278,10 @@ class MainWindow(QMainWindow):
     def handle_event(self, event: dict) -> None:
         """One engine event in, at most one screen change out."""
         name = event.get("event")
+        data = event.get("data") or {}
 
-        if name == "auth_state":
-            state = str(event.get("state", ""))
+        if name == "auth.state":
+            state = str(data.get("state", ""))
             if state == "WAIT_QR":
                 self.status("Waiting for you to scan the code...")
             elif state == "WAIT_PASSWORD":
@@ -273,9 +290,14 @@ class MainWindow(QMainWindow):
                 self.status("Signed in - finishing up...")
             elif state == "CLOSING":
                 self.status("Signing out...")
+            elif state == "CLOSED":
+                self.done_badge.setText("✓")
+                self.done_note.setText("Session closed cleanly.")
+                self.show_page("done")
+                self.status("Done.")
 
-        elif name == "connection":
-            state = str(event.get("state", ""))
+        elif name == "conn.state":
+            state = str(data.get("state", ""))
             if state.endswith("Ready"):
                 self.status("Connected.")
             elif state.endswith("Connecting"):
@@ -283,25 +305,46 @@ class MainWindow(QMainWindow):
             elif state.endswith("Updating"):
                 self.status("Syncing with Telegram...")
 
-        elif name == "qr_link":
-            self.qr_label.setPixmap(qrview.pixmap(str(event.get("link", "")), 300))
+        elif name == "auth.qr":
+            self.qr_label.setPixmap(qrview.pixmap(str(data.get("link", "")), 300))
             self.show_page("qr")
             self.status("Waiting for you to scan the code...")
 
-        elif name == "password_needed":
-            hint = str(event.get("hint", "")).strip()
+        elif name == "auth.password_needed":
+            hint = str(data.get("hint", "")).strip()
             if hint:
                 self.password_hint.setText(f"Hint from Telegram: {hint}")
             self.pages["password"].setEnabled(True)
             self.show_page("password")
             self.password_field.setFocus()
 
-        elif name == "ready":
-            who = str(event.get("user", "")).strip()
+        elif name == "auth.ready":
+            who = str(data.get("display_name", "")).strip()
             self.done_title.setText(f"Linked as {who}" if who else "Linked")
             self.done_note.setText("")
             self.show_page("done")
             self.status("Signed in.")
+
+        elif name == "auth.closed":
+            self.done_badge.setText("✓")
+            self.done_note.setText("Session closed cleanly.")
+            self.show_page("done")
+            self.status("Done.")
+
+        elif name == "engine.error":
+            code = data.get("code")
+            message = str(data.get("message", "unknown error"))
+            if message == "PASSWORD_HASH_INVALID":
+                # not fatal: Telegram will ask again, so stay on the password
+                # screen and say what happened
+                self.password_hint.setText("That password did not match. Try again.")
+                self.password_field.clear()
+                self.pages["password"].setEnabled(True)
+                self.show_page("password")
+                self.password_field.setFocus()
+                self.status("Wrong password.")
+                return
+            self.on_failed(f"Telegram said: {message}" + (f"  (code {code})" if code else ""))
 
         elif name == "closed":
             self.done_badge.setText("✓")
@@ -310,11 +353,9 @@ class MainWindow(QMainWindow):
             self.status("Done.")
 
         elif name == "error":
+            message = str(data.get("message", event.get("message", "unknown error")))
             code = event.get("code")
-            message = str(event.get("message", "unknown error"))
             if message == "PASSWORD_HASH_INVALID":
-                # not fatal: Telegram will ask again, so stay on the password
-                # screen and say what happened
                 self.password_hint.setText("That password did not match. Try again.")
                 self.password_field.clear()
                 self.pages["password"].setEnabled(True)
@@ -341,7 +382,7 @@ class MainWindow(QMainWindow):
             return
         self.password_field.clear()
         if self._worker is not None:
-            self._worker.send(password)
+            self._worker.submit_password(password)
         self.pages["password"].setEnabled(False)
         self.status("Checking the password...")
 
@@ -356,14 +397,44 @@ class MainWindow(QMainWindow):
             self.cred_error.show()
             return
         self.cred_error.hide()
-        saved = config.save_env({"TG_API_ID": api_id, "TG_API_HASH": api_hash})
+        try:
+            saved = config.save_env({"TG_API_ID": api_id, "TG_API_HASH": api_hash})
+        except TboxError as exc:
+            self.cred_error.setText(str(exc))
+            self.cred_error.show()
+            return
         self.status(f"Saved to {saved}")
         self._launch(api_id, api_hash)
+
+    def _logout(self) -> None:
+        if self._worker is not None:
+            self._worker.logout()
+            self.status("Logging out of Telegram...")
+        else:
+            self.status("No active session to log out.")
+
+    def _remove_local_data(self) -> None:
+        response = QMessageBox.question(
+            self,
+            "Remove local data",
+            "This deletes this computer's session, downloaded files and saved "
+            "settings. Your Telegram account is not deleted, but this device "
+            "will need to be linked again. Continue?",
+        )
+        if response != QMessageBox.StandardButton.Yes:
+            return
+        self._stop_worker()
+        removed = paths.remove_local_data()
+        self.done_note.setText(
+            "Local data removed. Run tbox login or start the app again to link this computer."
+        )
+        self.status(f"Removed: {', '.join(removed) if removed else 'nothing'}")
 
     def _prefill_if_known(self) -> None:
         known = config.load_env(paths.env_path())
         self.id_field.setText(known.get("TG_API_ID", ""))
-        self.hash_field.setText(known.get("TG_API_HASH", ""))
+        # api_hash may live in the secure store; nothing to prefill there
+        self.hash_field.setText("")
 
     def _back_to_keys(self) -> None:
         self._stop_worker()

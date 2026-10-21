@@ -93,6 +93,61 @@ class LoginScreenTest(unittest.TestCase):
         code, _ = rendered(scripted_engine())
         self.assertEqual(code, 1)
 
+    def test_modern_protocol_events_render_the_same_way(self):
+        # the real engine speaks auth.state/auth.qr/auth.ready/auth.closed
+        # with the payload under "data" (spec 6.5)
+        core = scripted_engine(
+            "out(event='auth.state', data={'state': 'WAIT_QR'})",
+            "out(event='auth.qr', data={'link': 'tg://login?token=T'})",
+            "out(event='auth.ready', data={'display_name': 'Tarang Patel'})",
+            "out(event='auth.closed', data={})",
+        )
+        code, text = rendered(core)
+        self.assertEqual(code, 0)
+        self.assertIn("Scan this with your phone", text)
+        self.assertIn("Linked as Tarang Patel.", text)
+        self.assertIn("Session closed.", text)
+
+    def test_modern_engine_error_changes_the_exit_code(self):
+        core = scripted_engine(
+            "out(event='engine.error', data={'message': 'API_ID_INVALID', 'code': 400})"
+        )
+        code, text = rendered(core)
+        self.assertEqual(code, 1)
+        self.assertIn("API_ID_INVALID", text)
+
+
+class LogoutTest(unittest.TestCase):
+    def test_logout_sends_the_command_and_reports_success(self):
+        sent: list[str] = []
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs) -> None:
+                pass
+
+            def start(self) -> None:
+                pass
+
+            def auth_logout(self) -> None:
+                sent.append("logout")
+
+            def close(self, timeout: float = 5.0) -> None:
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+
+        buffer = io.StringIO()
+        with mock.patch("tbox.cli.EngineClient", FakeClient):
+            with contextlib.redirect_stdout(buffer):
+                code = cli.main(["logout"])
+        self.assertEqual(code, 0)
+        self.assertEqual(sent, ["logout"])
+        self.assertIn("Logged out", buffer.getvalue())
+
 
 class MainTest(unittest.TestCase):
     def test_missing_credentials_point_at_setup(self):

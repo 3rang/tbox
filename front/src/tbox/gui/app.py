@@ -15,10 +15,11 @@ import os
 import shutil
 import sys
 import tempfile
+import threading as _threading
 import time
 
 from .. import config, qr
-from ..core import Core
+from ..engine_client import EngineClient
 from ..errors import TboxError
 from . import theme
 from .window import MainWindow
@@ -63,7 +64,9 @@ def selftest(report_path: str | None) -> int:
         note(f"window: {type(window).__name__}, pages={len(window.pages)}")
 
         # the event -> screen mapping, without a network
-        window.handle_event({"event": "qr_link", "link": "tg://login?token=SELFTEST"})
+        window.handle_event(
+            {"event": "auth.qr", "data": {"link": "tg://login?token=SELFTEST"}}
+        )
         rows = qr.matrix("tg://login?token=SELFTEST")
         drawn = window.qr_label.pixmap()
         note(f"qr: page={window.current_page} modules={len(rows)} "
@@ -90,16 +93,24 @@ def _engine_runs(note) -> bool:
     """Start the real engine with deliberately wrong keys: the point is that
     it runs at all (DLLs found, event stream readable), not that it logs in."""
     work = tempfile.mkdtemp(prefix="tbox-selftest-")
+    seen: list[dict] = []
+    done = _threading.Event()
+
+    def on_event(event: dict) -> None:
+        seen.append(event)
+        if event.get("event") in ("engine.error", "auth.ready", "auth.closed"):
+            done.set()
+
     try:
-        with Core.start_login(work, "123", "bogus") as core:
-            deadline = time.monotonic() + 30
-            for event in core.events():
-                if event.get("event") == "error":
-                    note(f"engine event: {event}")
-                    return True
-                if time.monotonic() > deadline:
-                    break
-        note("engine: no error event within 30s")
+        client = EngineClient(work, on_event=on_event)
+        client.start()
+        client.auth_start("123", "bogus")
+        done.wait(30)
+        client.close()
+        if seen:
+            note(f"engine event: {seen[-1]}")
+            return True
+        note("engine: no event within 30s")
         return False
     except TboxError as exc:
         note(f"engine failed: {exc}")

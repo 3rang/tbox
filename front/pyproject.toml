@@ -16,7 +16,8 @@ authors = [{ name = "Tarang Patel" }]
 # C engine as JSON lines (see src/tbox/core.py). Dependencies get added one at
 # a time, only when a chunk actually needs one.
 dependencies = [
-    "qrcode>=7.4",  # draws the login code in the terminal
+    "qrcode>=7.4",
+    "keyring>=24",
 ]
 
 # The desktop app needs a window toolkit; the command line does not, so it is

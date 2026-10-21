@@ -32,7 +32,7 @@ def data_dir() -> Path:
 
 
 def env_path() -> Path:
-    """Your Telegram app credentials (TG_API_ID, TG_API_HASH)."""
+    """Non-secret settings (``TG_API_ID``). Secrets live in the OS store."""
     return data_dir() / ".env"
 
 
@@ -43,6 +43,35 @@ def session_dir() -> Path:
     and ``files/`` inside it. Keeping it means a second run skips the QR.
     """
     return data_dir() / "session"
+
+
+def remove_local_data() -> list[str]:
+    """Deletes everything tbox keeps on this computer (spec S10).
+
+    The session directory (TDLib's database and downloaded files) and the
+    .env settings file. Secrets in the OS secure store are dropped too, so a
+    fresh start asks for the api_hash again. Returns the paths it removed;
+    missing paths are simply skipped.
+    """
+    import shutil
+
+    from . import secrets_store
+
+    removed: list[str] = []
+    session = session_dir()
+    if session.exists():
+        shutil.rmtree(session, ignore_errors=True)
+        removed.append(str(session))
+    env = env_path()
+    if env.exists():
+        try:
+            env.unlink()
+            removed.append(str(env))
+        except OSError:
+            pass
+    for username in (secrets_store.API_HASH, secrets_store.TDLIB_DB_KEY):
+        secrets_store.delete_secret(username)
+    return removed
 
 
 def build_dir() -> Path:

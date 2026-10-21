@@ -45,12 +45,19 @@ class FakeWorker(QObject):
         super().__init__()
         self.sent: list[str] = []
         self.stopped = False
+        self.logged_out = False
 
     def start(self) -> None:
         pass
 
     def send(self, line: str) -> None:
         self.sent.append(line)
+
+    def submit_password(self, password: str) -> None:
+        self.sent.append(password)
+
+    def logout(self) -> None:
+        self.logged_out = True
 
     def stop(self, timeout_ms: int = 0) -> None:
         self.stopped = True
@@ -76,7 +83,9 @@ class WindowTest(unittest.TestCase):
 
     def test_first_run_asks_for_the_keys(self):
         with mock.patch("tbox.gui.window.config.api_id", side_effect=ConfigError("none")):
-            self.window.start()
+            with mock.patch("tbox.gui.window.config.migrate_env_secrets"):
+                with mock.patch("tbox.gui.window.config.migration_warning", return_value=None):
+                    self.window.start()
         self.assertEqual(self.window.current_page, "credentials")
         self.assertIn("app keys", self.window.status_label.text())
 
@@ -102,23 +111,26 @@ class WindowTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch("tbox.gui.window.config.api_id", return_value="1"):
                 with mock.patch("tbox.gui.window.config.api_hash", return_value="a" * 32):
-                    with mock.patch("tbox.gui.window.EngineWorker", FakeWorker):
-                        with mock.patch(
-                            "tbox.gui.window.paths.session_dir",
-                            return_value=Path(tmp) / "session",
-                        ):
-                            self.window.start()
-                            worker = self.window._worker
+                    with mock.patch("tbox.gui.window.config.db_key", return_value=""):
+                        with mock.patch("tbox.gui.window.config.migrate_env_secrets"):
+                            with mock.patch("tbox.gui.window.config.migration_warning", return_value=None):
+                                with mock.patch("tbox.gui.window.EngineWorker", FakeWorker):
+                                    with mock.patch(
+                                        "tbox.gui.window.paths.session_dir",
+                                        return_value=Path(tmp) / "session",
+                                    ):
+                                        self.window.start()
+                                        worker = self.window._worker
 
         self.assertEqual(self.window.current_page, "connecting")
         self.assertIsInstance(worker, FakeWorker)
-        worker.event.emit({"event": "ready", "user": "Someone"})
+        worker.event.emit({"event": "auth.ready", "data": {"display_name": "Someone"}})
         self.assertEqual(self.window.current_page, "done")
 
     # ---- the journey ----------------------------------------------------
 
     def test_a_qr_link_draws_a_scannable_code(self):
-        self.window.handle_event({"event": "qr_link", "link": "tg://login?token=ABC"})
+        self.window.handle_event({"event": "auth.qr", "data": {"link": "tg://login?token=ABC"}})
         self.assertEqual(self.window.current_page, "qr")
         drawn = self.window.qr_label.pixmap()
         self.assertEqual(drawn.width(), 300)
@@ -126,16 +138,16 @@ class WindowTest(unittest.TestCase):
         self.assertIn("Devices", self.window.qr_caption.text())
 
     def test_a_new_link_replaces_the_old_code(self):
-        self.window.handle_event({"event": "qr_link", "link": "tg://login?token=FIRST"})
+        self.window.handle_event({"event": "auth.qr", "data": {"link": "tg://login?token=FIRST"}})
         first = self.window.qr_label.pixmap().toImage()
-        self.window.handle_event({"event": "qr_link", "link": "tg://login?token=SECOND"})
+        self.window.handle_event({"event": "auth.qr", "data": {"link": "tg://login?token=SECOND"}})
         second = self.window.qr_label.pixmap().toImage()
         self.assertNotEqual(first, second)
 
     def test_two_step_asks_for_the_password_and_sends_it(self):
         worker = FakeWorker()
         self.window._worker = worker
-        self.window.handle_event({"event": "password_needed", "hint": "your pet"})
+        self.window.handle_event({"event": "auth.password_needed", "data": {"hint": "your pet"}})
 
         self.assertEqual(self.window.current_page, "password")
         self.assertIn("your pet", self.window.password_hint.text())
@@ -147,10 +159,10 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(self.window.password_field.text(), "")  # never kept around
 
     def test_a_wrong_password_stays_on_the_password_screen(self):
-        self.window.handle_event({"event": "password_needed", "hint": ""})
+        self.window.handle_event({"event": "auth.password_needed", "data": {"hint": ""}})
         self.window.password_field.setText("wrong")
         self.window._submit_password()
-        self.window.handle_event({"event": "error", "message": "PASSWORD_HASH_INVALID"})
+        self.window.handle_event({"event": "engine.error", "data": {"message": "PASSWORD_HASH_INVALID"}})
 
         self.assertEqual(self.window.current_page, "password")
         self.assertIn("did not match", self.window.password_hint.text())
@@ -158,7 +170,7 @@ class WindowTest(unittest.TestCase):
 
     def test_any_other_error_offers_a_way_back_to_the_keys(self):
         self.window.handle_event(
-            {"event": "error", "message": "API_ID_INVALID", "code": 400}
+            {"event": "engine.error", "data": {"message": "API_ID_INVALID", "code": 400}}
         )
         self.assertEqual(self.window.current_page, "error")
         self.assertIn("API_ID_INVALID", self.window.error_text.text())
@@ -168,19 +180,19 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(self.window.current_page, "credentials")
 
     def test_ready_then_closed_reports_the_account(self):
-        self.window.handle_event({"event": "ready", "user": "Tarang Patel"})
+        self.window.handle_event({"event": "auth.ready", "data": {"display_name": "Tarang Patel"}})
         self.assertEqual(self.window.current_page, "done")
         self.assertIn("Tarang Patel", self.window.done_title.text())
 
-        self.window.handle_event({"event": "closed"})
+        self.window.handle_event({"event": "auth.closed", "data": {}})
         self.assertEqual(self.window.current_page, "done")
         self.assertIn("cleanly", self.window.done_note.text())
 
     def test_the_session_is_already_signed_in_goes_straight_to_done(self):
         # a second start: no QR at all, just ready -> closed
-        self.window.handle_event({"event": "auth_state", "state": "READY"})
-        self.window.handle_event({"event": "ready", "user": "Tarang Patel"})
-        self.window.handle_event({"event": "closed"})
+        self.window.handle_event({"event": "auth.state", "data": {"state": "READY"}})
+        self.window.handle_event({"event": "auth.ready", "data": {"display_name": "Tarang Patel"}})
+        self.window.handle_event({"event": "auth.closed", "data": {}})
         self.assertEqual(self.window.current_page, "done")
         self.assertIn("Tarang Patel", self.window.done_title.text())
 
@@ -189,6 +201,40 @@ class WindowTest(unittest.TestCase):
         self.window._worker = worker
         self.window.close()
         self.assertTrue(worker.stopped)
+
+    def test_logout_asks_the_worker_and_reports(self):
+        worker = FakeWorker()
+        self.window._worker = worker
+        self.window._logout()
+        self.assertTrue(worker.logged_out)
+        self.assertIn("Logging out", self.window.status_label.text())
+
+    def test_remove_local_data_confirms_then_deletes(self):
+        worker = FakeWorker()
+        self.window._worker = worker
+        removed = ["/tmp/session", "/tmp/.env"]
+        with mock.patch("tbox.gui.window.paths.remove_local_data", return_value=removed):
+            with mock.patch(
+                "tbox.gui.window.QMessageBox.question",
+                return_value=__import__(
+                    "PySide6.QtWidgets", fromlist=["QMessageBox"]
+                ).QMessageBox.StandardButton.Yes,
+            ):
+                self.window._remove_local_data()
+        self.assertTrue(worker.stopped)
+        self.assertIn("Local data removed", self.window.done_note.text())
+
+    def test_remove_local_data_is_cancelled_by_a_no(self):
+        removed = mock.Mock()
+        with mock.patch("tbox.gui.window.paths.remove_local_data", removed):
+            with mock.patch(
+                "tbox.gui.window.QMessageBox.question",
+                return_value=__import__(
+                    "PySide6.QtWidgets", fromlist=["QMessageBox"]
+                ).QMessageBox.StandardButton.No,
+            ):
+                self.window._remove_local_data()
+        removed.assert_not_called()
 
 
 @requires_qt
