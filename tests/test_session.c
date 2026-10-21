@@ -11,6 +11,7 @@
 #include <string.h>
 
 #ifdef _WIN32
+#include <direct.h>
 #include <io.h>
 #define TBOX_ACCESS _access
 #define TBOX_F_OK 0
@@ -21,6 +22,7 @@
 #endif
 
 #include "service/tbox_session.h"
+#include "util/fsx.h"
 #include "fake_td.h"
 
 static const char *DIR = "tbox_session_test";
@@ -293,6 +295,76 @@ static void test_progress_events_do_not_clog(void) {
     printf("progress: queued without clogging, later events kept\n");
 }
 
+/* Removes an empty directory (the session only ever creates empty ones
+ * here: the fake tdjson never writes files). remove() does not delete a
+ * directory on Windows, so rmdir is used instead. */
+static void rmdir_empty(const char *path) {
+#ifdef _WIN32
+    _rmdir(path);
+#else
+    rmdir(path);
+#endif
+}
+
+static void test_s5_db_key_migration(void) {
+    FakeTd *fake = fake_td_start(9);
+
+    /* Two distinct profiles, so neither case depends on leftover state:
+     *   - fresh:    nothing exists, the key goes in setTdlibParameters
+     *   - upgraded: tdlib/ is pre-created, mimicking a profile made by a
+     *               build that predates encryption
+     */
+    const char *fresh = "tbox_session_s5_fresh";
+    const char *up = "tbox_session_s5_up";
+    (void)tbox_fsx_remove("tbox_session_s5_fresh/tdlib");
+    (void)tbox_fsx_remove("tbox_session_s5_up/tdlib");
+    rmdir_empty("tbox_session_s5_fresh/tdlib");
+    rmdir_empty("tbox_session_s5_up/tdlib");
+    rmdir_empty(fresh);
+    rmdir_empty(up);
+
+    /* a fresh profile: tdlib/ does not exist yet, and the key travels in
+     * setTdlibParameters so tdlib creates an encrypted database. */
+    TBoxSession *s = tbox_session_start(&fake->api, fresh, 123, "hash", "a2V5");
+    assert(s != NULL);
+    assert(tbox_session_had_existing_db(s) == 0);
+    assert(sent_contains(fake, "database_encryption_key"));
+    assert(sent_contains(fake, "a2V5"));
+    assert(!sent_contains(fake, "setDatabaseEncryptionKey"));
+    tbox_session_close(s);
+
+    /* an upgraded profile: tdlib/ already exists, so the one-time
+     * migration must be offered instead of assumed. */
+    assert(tbox_fsx_mkdirs("tbox_session_s5_up/tdlib") == TBOX_FSX_OK);
+    TBoxSession *s2 = tbox_session_start(&fake->api, up, 123, "hash", "a2V5");
+    assert(s2 != NULL);
+    assert(tbox_session_had_existing_db(s2) == 1);
+    assert(!sent_contains(fake, "setDatabaseEncryptionKey")); /* not yet */
+
+    tbox_session_encrypt_db(s2, "a2V5");
+    assert(sent_contains(fake, "setDatabaseEncryptionKey"));
+    assert(sent_contains(fake, "new_encryption_key"));
+    assert(sent_contains(fake, "a2V5"));
+
+    /* idempotent per run: a second call sends nothing */
+    int before = fake->sent_n;
+    tbox_session_encrypt_db(s2, "a2V5");
+    assert(fake->sent_n == before);
+    /* a NULL key is refused, and does not consume the once-flag */
+    tbox_session_encrypt_db(s2, NULL);
+    assert(fake->sent_n == before);
+
+    tbox_session_close(s2);
+    fake_td_free(fake);
+    rmdir_empty("tbox_session_s5_fresh/tdlib");
+    rmdir_empty("tbox_session_s5_fresh/files");
+    rmdir_empty("tbox_session_s5_fresh");
+    rmdir_empty("tbox_session_s5_up/tdlib");
+    rmdir_empty("tbox_session_s5_up/files");
+    rmdir_empty("tbox_session_s5_up");
+    printf("session S5: fresh vs upgraded db-key handling\n");
+}
+
 int main(void) {
     /* bad input is refused, not half-started */
     FakeTd *fake = fake_td_start(7);
@@ -383,5 +455,6 @@ int main(void) {
     test_event_delivery_never_drops();
     test_live_reader_keeps_every_event();
     test_progress_events_do_not_clog();
+    test_s5_db_key_migration();
     return 0;
 }

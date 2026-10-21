@@ -48,6 +48,8 @@ struct TBoxSession {
     int qr_sent;
     int me_sent;
     int close_sent;
+    int pre_existing_db;   /* tdlib/ already existed (S5 migration branch) */
+    int db_key_migrating;  /* setDatabaseEncryptionKey sent this run */
 
     char link[1024];       /* last QR link shown, to detect rotation */
     char conn[64];         /* last updateConnectionState seen */
@@ -436,6 +438,11 @@ TBoxSession *tbox_session_start(const TBoxTdApi *api, const char *session_dir,
     }
     join_dir(s->dbdir, sizeof s->dbdir, session_dir, "tdlib");
     join_dir(s->filesdir, sizeof s->filesdir, session_dir, "files");
+    /* S5: if tdlib/ already exists this is an upgraded profile whose DB may
+     * predate encryption; the engine migrates it after auth.ready instead
+     * of assuming setTdlibParameters already covered it. Detect BEFORE
+     * mkdirs creates it. */
+    s->pre_existing_db = tbox_fsx_is_dir(s->dbdir);
     /* tdlib creates its database directory but NOT its parent, so a
      * fresh "session/tdlib" failed with "Can't create directory" until
      * the parent existed. Existence is fine; a failure surfaces through
@@ -522,6 +529,24 @@ void tbox_session_submit_password(TBoxSession *s, const char *password) {
     cJSON_AddStringToObject(req, "@type", "checkAuthenticationPassword");
     cJSON_AddStringToObject(req, "password", password);
     cJSON_AddStringToObject(req, "@extra", "pwd");
+    session_send(s, req);
+}
+
+int tbox_session_had_existing_db(const TBoxSession *s) {
+    return (s != NULL) ? s->pre_existing_db : 0;
+}
+
+void tbox_session_encrypt_db(TBoxSession *s, const char *db_key) {
+    if (s == NULL || db_key == NULL || db_key[0] == '\0' || s->db_key_migrating) {
+        return;
+    }
+    s->db_key_migrating = 1;
+    /* S5: encrypt an existing, previously-unencrypted database. The key is
+     * a secret and appears nowhere but this request. */
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "@type", "setDatabaseEncryptionKey");
+    cJSON_AddStringToObject(req, "new_encryption_key", db_key);
+    cJSON_AddStringToObject(req, "@extra", "dbkey");
     session_send(s, req);
 }
 

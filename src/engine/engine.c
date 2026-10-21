@@ -18,6 +18,7 @@
 #include "cmd/cmd.h" /* TBOX_VERSION */
 #include "engine/protocol.h"
 #include "service/tbox_session.h"
+#include "store/db.h"
 #include "util/fsx.h"
 #include "util/log.h"
 
@@ -48,6 +49,7 @@ struct TBoxEngine {
     char profile_dir[600];
     TBoxLog *log;
     TBoxFsxLock *lock;
+    TBoxDb *db; /* index.db (spec 7.5); opened at startup, owned here */
 
     TBoxSession *session; /* created by auth.start, NULL until then */
     long api_id;
@@ -120,6 +122,28 @@ static void emit_event(TBoxEngine *e, const char *event, const cJSON *data) {
 }
 
 /* ---- command implementations ---------------------------------------- */
+
+/* S5: once the session is ready, make sure the local database is encrypted
+ * and remember it. A brand-new profile already got the key through
+ * setTdlibParameters, so only an upgraded profile needs the one-time
+ * setDatabaseEncryptionKey call. Either way db_key_set is recorded so the
+ * migration can never run twice. */
+static void s5_after_ready(TBoxEngine *e) {
+    if (e->session == NULL || e->db == NULL || e->db_key[0] == '\0') {
+        return;
+    }
+    char v[8];
+    int have = tbox_db_meta_get(e->db, TBOX_DB_META_DB_KEY_SET, v, sizeof v);
+    if (have == 1 && strcmp(v, "1") == 0) {
+        return; /* already encrypted by a previous run */
+    }
+    if (tbox_session_had_existing_db(e->session)) {
+        tbox_session_encrypt_db(e->session, e->db_key);
+        tbox_log_write(e->log, TBOX_LOG_INFO, "store", NULL,
+                       "migrating the tdlib database to an encrypted one", NULL);
+    }
+    (void)tbox_db_meta_set(e->db, TBOX_DB_META_DB_KEY_SET, "1");
+}
 
 static void cmd_hello(TBoxEngine *e, const TBoxProtoRequest *req) {
     long long proto = 0;
@@ -264,6 +288,7 @@ static void handle_session_event(TBoxEngine *e, const TBoxSessionEventOut *ev) {
         break;
     case TBOX_SESSION_EV_READY:
         e->ready = 1;
+        s5_after_ready(e);
         cJSON_AddStringToObject(d, "display_name",
                                 ev->data != NULL ? ev->data : "");
         emit_event(e, "auth.ready", d);
@@ -496,7 +521,19 @@ TBoxEngine *tbox_engine_new(const TBoxTdApi *api, const TBoxEngineConfig *cfg,
         return NULL;
     }
 
-    /* index.db opens here from task 1.1 onward (exit code 4 on failure). */
+    /* spec 8.1 step 4: open index.db (migrations run inside). A failure is
+     * exit code 4 (spec 6.1). */
+    TBoxDbStatus ds = tbox_db_open(e->profile_dir, &e->db);
+    if (ds != TBOX_DB_OK) {
+        tbox_log_write(e->log, TBOX_LOG_ERROR, "store", NULL,
+                       "could not open index.db", NULL);
+        if (err != NULL) {
+            *err = TBOX_SERVE_DB_ERROR;
+        }
+        tbox_engine_free(e);
+        return NULL;
+    }
+
     if (err != NULL) {
         *err = 0;
     }
@@ -511,6 +548,7 @@ void tbox_engine_free(TBoxEngine *e) {
         tbox_session_close(e->session);
         e->session = NULL;
     }
+    tbox_db_close(e->db);
     EngineCmd *c = e->qhead;
     while (c != NULL) {
         EngineCmd *next = c->next;

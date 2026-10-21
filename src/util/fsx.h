@@ -34,6 +34,11 @@ FILE *tbox_fsx_fopen(const char *path, const char *mode);
  * if a component exists but is not a directory. */
 TBoxFsxStatus tbox_fsx_mkdirs(const char *path);
 
+/* True when path names an existing directory. A missing path, a file, or
+ * a path that does not convert is simply not a directory (0), never an
+ * error - callers use it to branch, not to fail. */
+int tbox_fsx_is_dir(const char *path);
+
 TBoxFsxStatus tbox_fsx_remove(const char *path);
 
 /* Moves a name over a path, POSIX rename() semantics: the destination is

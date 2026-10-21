@@ -101,6 +101,16 @@ void tbox_session_submit_password(TBoxSession *s, const char *password);
  * than once. */
 void tbox_session_logout(TBoxSession *s);
 
+/* S5: true when tdlib/ existed before this session started, i.e. an
+ * upgraded profile whose database may predate encryption. The engine calls
+ * tbox_session_encrypt_db() after auth.ready in that case. */
+int tbox_session_had_existing_db(const TBoxSession *s);
+
+/* S5: asks tdlib to encrypt the local database with `db_key` (base64),
+ * TDLib setDatabaseEncryptionKey. Idempotent per run: the request is sent
+ * at most once. Call only after the session is ready. */
+void tbox_session_encrypt_db(TBoxSession *s, const char *db_key);
+
 /* Asks tdlib to close the session (valid once authorized); the CLOSED
  * event follows. Safe to call more than once. */
 void tbox_session_request_close(TBoxSession *s);

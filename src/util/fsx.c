@@ -92,6 +92,13 @@ FILE *tbox_fsx_fopen(const char *path, const char *mode) {
 #endif
 }
 
+int tbox_fsx_is_dir(const char *path) {
+    if (path == NULL || path[0] == '\0') {
+        return 0;
+    }
+    return fsx_is_dir(path);
+}
+
 TBoxFsxStatus tbox_fsx_mkdirs(const char *path) {
     char tmp[TBOX_FSX_PATH];
     if (path == NULL || path[0] == '\0') {

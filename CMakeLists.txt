@@ -13,6 +13,36 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 add_library(cjson STATIC third_party/cjson/cJSON.c)
 target_include_directories(cjson PUBLIC third_party/cjson)
 
+# SQLite (vendored, public domain) — the index.db catalog. Compiled straight
+# in, no DLL. Flags are fixed by the spec (5.2): FTS5 for the phase-5 search
+# index, DQS off so a double-quoted string is never silently accepted where
+# an identifier is required, and the serialized threadsafe build because the
+# engine's one state thread and the TDLib thread both reach it through one
+# connection guarded by the engine loop.
+add_library(sqlite3 STATIC third_party/sqlite/sqlite3.c)
+target_include_directories(sqlite3 PUBLIC third_party/sqlite)
+target_compile_definitions(sqlite3 PRIVATE
+  SQLITE_ENABLE_FTS5
+  SQLITE_DQS=0
+  SQLITE_THREADSAFE=1
+  SQLITE_OMIT_LOAD_EXTENSION   # no dlopen of user extensions, ever
+  SQLITE_DEFAULT_FOREIGN_KEYS=1
+)
+# The amalgamation is third-party: it must not be held to /W4 or our warnings.
+if(MSVC)
+  target_compile_options(sqlite3 PRIVATE /W0)
+endif()
+
+# tbox_store — the index.db catalog over SQLite (spec 7.5). Its own target
+# so tests and the engine both link it, and so the SQLite amalgamation sits
+# behind one seam.
+add_library(tbox_store STATIC src/store/db.c)
+target_include_directories(tbox_store PUBLIC src)
+target_link_libraries(tbox_store PUBLIC sqlite3)
+if(MSVC)
+  target_compile_options(tbox_store PRIVATE /W4)
+endif()
+
 # tbox_util_fsx — filesystem primitives: UTF-8 paths through the Windows
 # W functions (coding rules), recursive mkdir, the spec 9.2 durable
 # replace and the spec 9.3 single-instance engine.lock. No tdjson, so
@@ -95,7 +125,7 @@ add_library(tbox_engine STATIC
   src/engine/transport_stdio.c
 )
 target_include_directories(tbox_engine PUBLIC src)
-target_link_libraries(tbox_engine PUBLIC tbox_td_core cjson tbox_util_log)
+target_link_libraries(tbox_engine PUBLIC tbox_td_core cjson tbox_util_log tbox_store)
 if(MSVC)
   target_compile_options(tbox_engine PRIVATE /W4)
 endif()
@@ -126,7 +156,7 @@ target_link_libraries(test_td_client PRIVATE tbox_td_core)
 add_test(NAME td_client_flow COMMAND test_td_client)
 
 add_executable(test_session tests/test_session.c)
-target_link_libraries(test_session PRIVATE tbox_td_core)
+target_link_libraries(test_session PRIVATE tbox_td_core tbox_util_fsx)
 add_test(NAME session_flow COMMAND test_session)
 
 add_executable(test_protocol tests/test_protocol.c)
@@ -149,6 +179,13 @@ if(WIN32)
   add_test(NAME no_argv_secrets
     COMMAND powershell -ExecutionPolicy Bypass -File
             "${CMAKE_SOURCE_DIR}/scripts/check-no-argv-secrets.ps1")
+endif()
+
+add_executable(test_store tests/test_store.c)
+target_link_libraries(test_store PRIVATE tbox_store tbox_util_fsx)
+add_test(NAME store_index COMMAND test_store)
+if(MSVC)
+  target_compile_options(test_store PRIVATE /W4)
 endif()
 
 # Vendored TDLib: link the td_json_client C API and stage the DLLs beside

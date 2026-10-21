@@ -72,6 +72,16 @@ static void test_mkdirs_is_recursive_and_tolerant(void) {
     assert(tbox_fsx_mkdirs(DIR "/a/x/y") == TBOX_FSX_E_IO);
 }
 
+static void test_is_dir_branches(void) {
+    assert(tbox_fsx_mkdirs(DIR "/d") == TBOX_FSX_OK);
+    assert(tbox_fsx_is_dir(DIR "/d") == 1);
+    put(DIR "/d/file", "x");
+    assert(tbox_fsx_is_dir(DIR "/d/file") == 0); /* a file is not a dir */
+    assert(tbox_fsx_is_dir(DIR "/nope") == 0);   /* missing, not an error */
+    assert(tbox_fsx_is_dir(NULL) == 0);
+    assert(tbox_fsx_is_dir("") == 0);
+}
+
 /* ---- fopen / rename / remove ------------------------------------------ */
 
 static void test_fopen_roundtrip(void) {
@@ -157,6 +167,7 @@ static void test_lock_argument_rules(void) {
 
 int main(void) {
     test_mkdirs_is_recursive_and_tolerant();
+    test_is_dir_branches();
     test_fopen_roundtrip();
     test_rename_and_remove();
     test_replace_overwrites_and_keeps_old_on_failure();

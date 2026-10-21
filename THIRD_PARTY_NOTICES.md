@@ -11,6 +11,7 @@ Adding a dependency means adding it here; the vendor DLLs are fetched by
 | Name | Version | License | Source |
 |---|---|---|---|
 | cJSON | 1.7.19 | MIT | <https://github.com/DaveGamble/cJSON> — vendored at `third_party/cjson/` |
+| SQLite | 3.54.1 | Public domain | <https://www.sqlite.org/> — amalgamation vendored at `third_party/sqlite/` (fetched by `scripts/fetch-sqlite.ps1`) |
 | TDLib | 1.8.67 | Boost Software License 1.0 | <https://github.com/tdlib/td> — vendored as `vendor/tdjson.dll` |
 | OpenSSL | 3.x | Apache-2.0 | <https://github.com/openssl/openssl> — vendored as `libcrypto-3-x64.dll`, `libssl-3-x64.dll` |
 | zlib | 1.3.2 | zlib License | <https://github.com/madler/zlib> — vendored as `z.dll` |
