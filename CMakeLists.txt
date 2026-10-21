@@ -46,7 +46,7 @@ endif()
 # tbox_catalog — pure catalog logic: the tbx1 record (spec 7.2) and the S8
 # name rules. No TDLib, no filesystem, no SQLite, so its tests run anywhere
 # (CI-friendly) and both the scan and mutation paths share it.
-add_library(tbox_catalog STATIC src/catalog/record.c)
+add_library(tbox_catalog STATIC src/catalog/record.c src/catalog/resolve.c)
 target_include_directories(tbox_catalog PUBLIC src)
 target_link_libraries(tbox_catalog PUBLIC cjson)
 if(MSVC)
@@ -58,6 +58,13 @@ target_link_libraries(test_record PRIVATE tbox_catalog)
 add_test(NAME catalog_record COMMAND test_record)
 if(MSVC)
   target_compile_options(test_record PRIVATE /W4)
+endif()
+
+add_executable(test_resolve tests/test_resolve.c)
+target_link_libraries(test_resolve PRIVATE tbox_catalog)
+add_test(NAME catalog_resolve COMMAND test_resolve)
+if(MSVC)
+  target_compile_options(test_resolve PRIVATE /W4)
 endif()
 
 # tbox_util_fsx — filesystem primitives: UTF-8 paths through the Windows
