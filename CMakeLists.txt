@@ -32,12 +32,14 @@ add_library(tbox_td STATIC
 )
 target_include_directories(tbox_td PUBLIC src)
 
-add_executable(tbox
+# The engine executable. It is named tbox-engine so that `tbox` stays free
+# for the GUI app (and the pip console script); the front finds it by name.
+add_executable(tbox-engine
   src/main.c
   src/cli/cli.c
   src/cmd/cmd.c
 )
-target_link_libraries(tbox PRIVATE tbox_td_core tbox_td)
+target_link_libraries(tbox-engine PRIVATE tbox_td_core tbox_td)
 
 enable_testing()
 
@@ -61,5 +63,5 @@ add_test(NAME session_flow COMMAND test_session)
 # Vendored TDLib: link the td_json_client C API and stage the DLLs beside
 # every binary that uses it. TBOX_TDJSON_TARGETS must be set BEFORE the
 # include so the module links and stages for all of them.
-set(TBOX_TDJSON_TARGETS tbox test_tbox_td)
+set(TBOX_TDJSON_TARGETS tbox-engine test_tbox_td)
 include(cmake/tdjson-vendored.cmake)

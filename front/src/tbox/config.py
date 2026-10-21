@@ -140,14 +140,16 @@ def core_exe() -> Path:
     """The compiled C engine, in order of preference:
 
     1. ``TBOX_CORE`` — an explicit path, for unusual setups
-    2. inside this process — a frozen ``tbox.exe`` bundles its own engine
+    2. inside this process — a frozen app bundles its own ``tbox-engine``
     3. ``tbox/bin/`` inside this package — what an installed app uses
     4. ``build/`` in the repository — what a checkout uses
 
     The DLLs the engine needs (tdjson and friends) sit beside it, so a
     bundled copy is a complete, self-contained app.
     """
-    name = "tbox.exe" if os.name == "nt" else "tbox"
+    # tbox-engine, not tbox: `tbox` belongs to the GUI app and the pip
+    # console script, so the two can never be confused.
+    name = "tbox-engine.exe" if os.name == "nt" else "tbox-engine"
     override = _setting("TBOX_CORE")
     if override:
         candidates = [Path(override).expanduser()]

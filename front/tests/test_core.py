@@ -21,6 +21,11 @@ from tbox.core import Core
 from tbox.errors import ConfigError, CoreError
 
 
+def engine_name() -> str:
+    """The engine executable's name, exactly as config.core_exe() builds it."""
+    return "tbox-engine.exe" if os.name == "nt" else "tbox-engine"
+
+
 @contextlib.contextmanager
 def env(**values: str):
     """Set environment variables for the duration of a with-block."""
@@ -122,18 +127,17 @@ class ConfigTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             bundled = Path(tmp) / "bin"
             bundled.mkdir()
-            exe = bundled / ("tbox.exe" if os.name == "nt" else "tbox")
+            exe = bundled / engine_name()
             exe.write_text("", encoding="utf-8")
             with mock.patch("tbox.config._setting", return_value=None):
                 with mock.patch("tbox.paths.bundled_dir", return_value=bundled):
                     self.assertEqual(config.core_exe(), exe)
 
     def test_frozen_build_finds_its_own_engine(self):
-        name = "tbox.exe" if os.name == "nt" else "tbox"
         with tempfile.TemporaryDirectory() as tmp:
             extract = Path(tmp) / "meipass"
             extract.mkdir()
-            exe = extract / name
+            exe = extract / engine_name()
             exe.write_text("", encoding="utf-8")
             with mock.patch("tbox.config._setting", return_value=None):
                 with mock.patch("sys.frozen", True, create=True):

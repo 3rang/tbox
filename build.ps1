@@ -37,14 +37,14 @@ Step "1/6  C engine: configure, build, test"
 & (Join-Path $root "scripts\build-native.ps1")
 
 Step "2/6  bundle the engine into the package (tbox/bin)"
-if (-not (Test-Path -LiteralPath (Join-Path $build "tbox.exe"))) {
-    throw "build\tbox.exe is missing - step 1 did not produce it"
+if (-not (Test-Path -LiteralPath (Join-Path $build "tbox-engine.exe"))) {
+    throw "build\tbox-engine.exe is missing - step 1 did not produce it"
 }
 if (Test-Path -LiteralPath $bundle) {
     Remove-Item -LiteralPath $bundle -Recurse -Force
 }
 New-Item -ItemType Directory -Path $bundle -Force | Out-Null
-Copy-Item -LiteralPath (Join-Path $build "tbox.exe") -Destination $bundle
+Copy-Item -LiteralPath (Join-Path $build "tbox-engine.exe") -Destination $bundle
 Get-ChildItem -LiteralPath $build -Filter "*.dll" | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $bundle
 }

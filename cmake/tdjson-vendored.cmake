@@ -14,7 +14,7 @@ set(TBOX_TDJSON_LIBRARY "" CACHE FILEPATH "Path to prebuilt libtdjson (empty = a
 
 # Targets that link tdjson and need the DLL staged beside them.
 if(NOT DEFINED TBOX_TDJSON_TARGETS)
-  set(TBOX_TDJSON_TARGETS tbox)
+  set(TBOX_TDJSON_TARGETS tbox-engine)
 endif()
 list(REMOVE_DUPLICATES TBOX_TDJSON_TARGETS)
 
