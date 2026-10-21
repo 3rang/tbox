@@ -212,6 +212,22 @@ if(MSVC)
   target_compile_options(test_store PRIVATE /W4)
 endif()
 
+# The in-memory Saved Messages chat the sync tests drive. It is a test-only
+# library, linked by every sync test that needs a chat to scan.
+add_library(tbox_fake_chat STATIC tests/fake_chat.c)
+target_include_directories(tbox_fake_chat PUBLIC tests)
+target_link_libraries(tbox_fake_chat PUBLIC cjson)
+if(MSVC)
+  target_compile_options(tbox_fake_chat PRIVATE /W4)
+endif()
+
+add_executable(test_fake_chat tests/test_fake_chat.c)
+target_link_libraries(test_fake_chat PRIVATE tbox_fake_chat)
+add_test(NAME fake_chat COMMAND test_fake_chat)
+if(MSVC)
+  target_compile_options(test_fake_chat PRIVATE /W4)
+endif()
+
 # Vendored TDLib: link the td_json_client C API and stage the DLLs beside
 # every binary that uses it. TBOX_TDJSON_TARGETS must be set BEFORE the
 # include so the module links and stages for all of them.

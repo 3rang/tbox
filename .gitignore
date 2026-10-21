@@ -3,6 +3,9 @@ build/
 dist/
 *.egg-info/
 out/
+*.pdb
+*.ilk
+*.obj
 
 # Python caches
 __pycache__/
