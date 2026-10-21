@@ -335,3 +335,7 @@ TBoxDbStatus tbox_db_meta_set(TBoxDb *db, const char *key, const char *value) {
     sqlite3_finalize(st);
     return (rc == SQLITE_DONE) ? TBOX_DB_OK : TBOX_DB_E_IO;
 }
+
+struct sqlite3 *tbox_db_handle(TBoxDb *db) {
+    return db == NULL ? NULL : db->handle;
+}

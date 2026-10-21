@@ -68,4 +68,11 @@ TBoxDbStatus tbox_db_meta_set(TBoxDb *db, const char *key, const char *value);
  * on the engine's own connection. Returns the value, or -1 on error. */
 int tbox_db_pragma_int(const TBoxDb *db, const char *name);
 
+/* The underlying handle, for the store's own statement modules
+ * (store/catalog.c). It is deliberately the only way out of this file: the
+ * connection is still owned here and still single-threaded (spec 3.1 rule 2),
+ * and callers must not open, close or re-configure it. Returns NULL for a
+ * NULL db. */
+struct sqlite3 *tbox_db_handle(TBoxDb *db);
+
 #endif /* TBOX_STORE_DB_H */

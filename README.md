@@ -234,15 +234,17 @@ tests rather than good intentions:
 
 ```
 build.ps1            one command -> app
-src/                 C engine (cli/, cmd/, engine/, service/, store/, td/)
+src/                 C engine (cli/, cmd/, engine/, service/, store/, catalog/, sync/, td/)
   cli/               argv parsing + dispatch
   cmd/               command bodies (serve, dev login)
   engine/            the long-running engine loop + protocol
   service/           UI-free session: TDLib params, auth FSM, event queue
-  store/             index.db: migrations, meta, pragmas (SQLite)
+  store/             index.db: migrations, meta, pragmas, the catalog tables (SQLite)
+  catalog/           pure catalog logic: the tbx1 record, resolve, message parsing
+  sync/              turning Saved Messages into the catalog: the full scan
   util/              log (redaction), rand, fsx
   td/                the only code touching tdjson native symbols
-tests/               C tests (ctest gate)
+tests/               C tests (ctest gate), including the in-memory fake chat
 front/               Python front
   src/tbox/          the package: config, engine_client, secrets_store, qr, cli
   src/tbox/gui/      the window (theme, worker thread, screens)
