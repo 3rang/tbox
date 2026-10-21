@@ -29,8 +29,10 @@
 #include "td/tbox_td_client.h"
 #include "util/fsx.h"
 
-#define TBOX_EVQ 32     /* pending events before the oldest is dropped */
-#define TBOX_POLL_MS 5  /* take_event polling granularity */
+/* Event queue limits (spec 6.6). TBOX_SESSION_EVENTS_MAX (10000) is the
+ * high-water mark declared in the header; progress events are advisory and
+ * coalesce instead of ever hitting it. */
+#define TBOX_POLL_MS 5 /* take_event polling granularity */
 
 struct TBoxSession {
     TBoxTdClient *client;
@@ -49,11 +51,16 @@ struct TBoxSession {
     char link[1024];       /* last QR link shown, to detect rotation */
     char conn[64];         /* last updateConnectionState seen */
 
-    /* Event ring: receive thread writes, caller thread reads. */
-    TBoxSessionEventOut ev[TBOX_EVQ];
-    int ehead;             /* oldest */
-    int etail;             /* next write */
-    int ecount;
+    /* Event queue: receive thread writes, caller thread reads. Payloads
+     * are owned heap strings (P5: no fixed buffer); the queue starts
+     * small and grows, so a steady trickle never pays for the cap. */
+    TBoxSessionEventOut *ev;
+    size_t ev_cap;
+    size_t ehead;          /* oldest */
+    size_t etail;          /* next write */
+    size_t ecount;
+    int resync_needed;     /* queue overflowed: reconcile required (6.6) */
+    int progress_dropped;  /* a progress event was coalesced (6.6) */
 #ifdef _WIN32
     CRITICAL_SECTION lock;
 #else
@@ -79,30 +86,139 @@ static void unlock_session(TBoxSession *s) {
 #endif
 }
 
-/* Queue one event; when the ring is full the OLDEST is dropped, so a front
- * that stopped reading still sees where the session ended up. */
-static void push_event(TBoxSession *s, TBoxSessionEvent type, int code,
-                       const char *data) {
-    lock_session(s);
-    if (s->ecount == TBOX_EVQ) {
-        s->ehead = (s->ehead + 1) % TBOX_EVQ;
-        s->ecount--;
+/* Progress is the one kind of event spec 6.6 lets a newer copy replace. */
+static int is_progress(TBoxSessionEvent type) {
+    return type == TBOX_SESSION_EV_TRANSFER_PROGRESS ||
+           type == TBOX_SESSION_EV_SYNC_PROGRESS;
+}
+
+/* One queue slot, owning its payload. */
+typedef struct SessionSlot {
+    TBoxSessionEvent type;
+    int code;
+    long long total;
+    char *data; /* heap or NULL */
+} SessionSlot;
+
+static char *dup_text(const char *data) {
+    if (data == NULL) {
+        return NULL;
+    }
+    size_t n = strlen(data) + 1;
+    char *copy = malloc(n);
+    if (copy != NULL) {
+        memcpy(copy, data, n);
+    }
+    return copy;
+}
+
+/* Grows the array before it is needed; never drops what is already there.
+ * The ring is stored modulo ev_cap, so doubling the capacity reorders
+ * logical positions: copy the live range out, rebase etail, and move it
+ * back. Getting this wrong silently scrambles every queued event. The
+ * doubling is clamped to the spec 6.6 cap, so the last growth cannot
+ * overshoot it into an oversized queue. */
+static int ev_grow(TBoxSession *s) {
+    size_t ncap = s->ev_cap * 2;
+    if (ncap > TBOX_SESSION_EVENTS_MAX) {
+        ncap = TBOX_SESSION_EVENTS_MAX;
+    }
+    TBoxSessionEventOut *n = malloc(ncap * sizeof *n);
+    if (n == NULL) {
+        return -1;
+    }
+    for (size_t i = 0; i < s->ecount; i++) {
+        n[i] = s->ev[(s->ehead + i) % s->ev_cap];
+    }
+    free(s->ev);
+    s->ev = n;
+    s->ev_cap = ncap;
+    s->ehead = 0;
+    s->etail = s->ecount;
+    return 0;
+}
+
+/* Where a new event's storage lives, lock held. The queue grows by
+ * doubling until it would pass the spec 6.6 high-water mark, and only
+ * then reports that it cannot take more: an event that cannot be queued
+ * does not vanish quietly - it sets resync_needed and returns NULL so the
+ * caller can fall back to the reconcile hint (spec 6.6). */
+static TBoxSessionEventOut *enqueue_locked(TBoxSession *s, TBoxSessionEvent type) {
+    if (s->ecount == s->ev_cap) {
+        if (s->ev_cap >= TBOX_SESSION_EVENTS_MAX || ev_grow(s) != 0) {
+            s->resync_needed = 1;
+            return NULL;
+        }
     }
     TBoxSessionEventOut *out = &s->ev[s->etail];
     out->type = type;
-    out->code = code;
-    snprintf(out->data, sizeof out->data, "%s", data != NULL ? data : "");
-    s->etail = (s->etail + 1) % TBOX_EVQ;
+    out->code = 0;
+    out->total = 0;
+    out->data = NULL;
+    s->etail = (s->etail + 1) % s->ev_cap;
     s->ecount++;
+    return out;
+}
+
+/* Queue one event, heap payload frees its predecessor when coalescing.
+ * When the queue refuses the event (memory), everything worth keeping is
+ * still delivered: the coalesced progress is already gone, and a resync
+ * hint goes in its place. An event pushed INSIDE this failure path is
+ * never itself refused - the queue is not fuller than before. */
+static void push_event_full(TBoxSession *s, TBoxSessionEvent type, int code,
+                            long long total, const char *data) {
+    lock_session(s);
+    if (is_progress(type) && data != NULL) {
+        /* coalescing: keep only the latest progress per op_id */
+        if (s->ecount >= 2) {
+            TBoxSessionEventOut *newest =
+                &s->ev[(s->etail + s->ev_cap - 1) % s->ev_cap];
+            if (newest->type == type && newest->data != NULL &&
+                strcmp(newest->data, data) == 0) {
+                newest->code = code;
+                newest->total = total;
+                s->progress_dropped = 1;
+                unlock_session(s);
+                return;
+            }
+        }
+        /* a burst cannot flood the queue with one op's stale progress */
+        if (s->ecount >= TBOX_SESSION_EVENTS_MAX) {
+            s->progress_dropped = 1;
+            unlock_session(s);
+            return;
+        }
+    }
+    TBoxSessionEventOut *out = enqueue_locked(s, type);
+    if (out == NULL) {
+        /* Overflow: the event itself is replaced by the reconcile hint
+         * (spec 6.6), which every front already knows how to handle. */
+        out = enqueue_locked(s, TBOX_SESSION_EV_CATALOG_CHANGED);
+        if (out != NULL) {
+            out->data = dup_text("*");
+        }
+        unlock_session(s);
+        return;
+    }
+    out->code = code;
+    out->total = total;
+    out->data = dup_text(data);
     unlock_session(s);
+}
+
+/* The common text event. */
+static void push_event(TBoxSession *s, TBoxSessionEvent type, int code,
+                       const char *data) {
+    push_event_full(s, type, code, 0, data);
 }
 
 static int pop_event(TBoxSession *s, TBoxSessionEventOut *out) {
     lock_session(s);
     int have = s->ecount > 0;
     if (have) {
-        *out = s->ev[s->ehead];
-        s->ehead = (s->ehead + 1) % TBOX_EVQ;
+        *out = s->ev[s->ehead];         /* the payload moves to the caller */
+        s->ev[s->ehead].data = NULL;    /* so close() cannot free it again */
+        s->ehead = (s->ehead + 1) % s->ev_cap;
         s->ecount--;
     }
     unlock_session(s);
@@ -318,6 +434,13 @@ TBoxSession *tbox_session_start(const TBoxTdApi *api, const char *session_dir,
     (void)tbox_fsx_mkdirs(s->filesdir);
     s->state = (int)TBOX_AUTH_START;
 
+    /* start small; the queue grows on demand (spec 6.6) */
+    s->ev_cap = 8;
+    s->ev = calloc(s->ev_cap, sizeof *s->ev);
+    if (s->ev == NULL) {
+        goto fail;
+    }
+
     s->client = tbox_td_client_open(api, 0);
     if (s->client == NULL) {
         goto fail;
@@ -337,6 +460,7 @@ fail:
 #else
     pthread_mutex_destroy(&s->lock);
 #endif
+    free(s->ev);
     free(s);
     return NULL;
 }
@@ -358,6 +482,26 @@ int tbox_session_take_event(TBoxSession *s, TBoxSessionEventOut *out,
         TBOX_SLEEP_MS(TBOX_POLL_MS);
         waited += TBOX_POLL_MS;
     }
+}
+
+int tbox_session_resync_needed(TBoxSession *s) {
+    if (s == NULL) {
+        return 0;
+    }
+    lock_session(s);
+    int v = s->resync_needed;
+    unlock_session(s);
+    return v;
+}
+
+int tbox_session_progress_dropped(TBoxSession *s) {
+    if (s == NULL) {
+        return 0;
+    }
+    lock_session(s);
+    int v = s->progress_dropped;
+    unlock_session(s);
+    return v;
 }
 
 void tbox_session_submit_password(TBoxSession *s, const char *password) {
@@ -386,6 +530,11 @@ void tbox_session_close(TBoxSession *s) {
         return;
     }
     tbox_td_client_close(s->client); /* stops the thread: no more pushes */
+    /* payloads still queued belong to the session until taken; drop them */
+    for (size_t i = 0; i < s->ecount; i++) {
+        free(s->ev[(s->ehead + i) % s->ev_cap].data);
+    }
+    free(s->ev);
 #ifdef _WIN32
     DeleteCriticalSection(&s->lock);
 #else

@@ -26,7 +26,8 @@
 #define FAKE_SLEEP_MS(ms) usleep((ms) * 1000)
 #endif
 
-#define FAKE_MAX 16
+#define FAKE_MAX 16      /* sent requests recorded (scripted flows are short) */
+#define FAKE_QUEUE_MAX 65536 /* a fake must be able to stage a real burst */
 
 typedef struct FakeTd {
     TBoxTdApi api;
@@ -34,7 +35,7 @@ typedef struct FakeTd {
     int verbosity;
     char *sent[FAKE_MAX];
     int sent_n;
-    char *queue[FAKE_MAX];
+    char *queue[FAKE_QUEUE_MAX];
     int qn;
     int qhead; /* events replay FIFO, like td_receive does */
 } FakeTd;
@@ -74,7 +75,7 @@ static FakeTd *fake_td_start(int client_id) {
 }
 
 static void fake_td_enqueue(FakeTd *f, const char *event_json) {
-    if (f->qn < FAKE_MAX) {
+    if (f->qn < FAKE_QUEUE_MAX) {
         f->queue[f->qn++] = _strdup(event_json);
     }
 }
