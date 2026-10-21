@@ -86,6 +86,20 @@ add_library(tbox_td STATIC
 )
 target_include_directories(tbox_td PUBLIC src)
 
+# tbox_engine — the loop + protocol + stdio transport (spec 3.1). No native
+# TDLib symbols: the api table is injected, so its tests run without the
+# dll (CI-friendly). Depends on the session, cJSON and the util layer.
+add_library(tbox_engine STATIC
+  src/engine/protocol.c
+  src/engine/engine.c
+  src/engine/transport_stdio.c
+)
+target_include_directories(tbox_engine PUBLIC src)
+target_link_libraries(tbox_engine PUBLIC tbox_td_core cjson tbox_util_log)
+if(MSVC)
+  target_compile_options(tbox_engine PRIVATE /W4)
+endif()
+
 # The engine executable. It is named tbox-engine so that `tbox` stays free
 # for the GUI app (and the pip console script); the front finds it by name.
 add_executable(tbox-engine
@@ -113,6 +127,20 @@ add_test(NAME td_client_flow COMMAND test_td_client)
 add_executable(test_session tests/test_session.c)
 target_link_libraries(test_session PRIVATE tbox_td_core)
 add_test(NAME session_flow COMMAND test_session)
+
+add_executable(test_protocol tests/test_protocol.c)
+target_link_libraries(test_protocol PRIVATE tbox_engine)
+add_test(NAME engine_protocol COMMAND test_protocol)
+if(MSVC)
+  target_compile_options(test_protocol PRIVATE /W4)
+endif()
+
+add_executable(test_engine tests/test_engine.c)
+target_link_libraries(test_engine PRIVATE tbox_engine)
+add_test(NAME engine_loop COMMAND test_engine)
+if(MSVC)
+  target_compile_options(test_engine PRIVATE /W4)
+endif()
 
 # Vendored TDLib: link the td_json_client C API and stage the DLLs beside
 # every binary that uses it. TBOX_TDJSON_TARGETS must be set BEFORE the

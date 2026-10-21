@@ -38,6 +38,7 @@ struct TBoxSession {
     TBoxTdClient *client;
     long api_id;           /* session config: passed IN, never read from disk */
     char api_hash[128];
+    char db_key[128];      /* base64 TDLib DB key (S5); empty = unencrypted */
     char dbdir[600];
     char filesdir[600];
 
@@ -249,6 +250,11 @@ static void session_send_params(TBoxSession *s) {
     cJSON_AddBoolToObject(req, "use_file_database", 1);
     cJSON_AddBoolToObject(req, "use_message_database", 1);
     cJSON_AddBoolToObject(req, "use_secret_chats", 0);
+    if (s->db_key[0] != '\0') {
+        /* S5: the TDLib DB is encrypted at rest; the key is a secret and
+         * never appears anywhere but this request. */
+        cJSON_AddStringToObject(req, "database_encryption_key", s->db_key);
+    }
     cJSON_AddStringToObject(req, "device_model", "tbox");
     cJSON_AddStringToObject(req, "system_language_code", "en");
     cJSON_AddStringToObject(req, "application_version", "0.1.0-dev");
@@ -408,7 +414,8 @@ static void join_dir(char *dst, size_t cap, const char *base, const char *leaf) 
 /* ---- public API ----------------------------------------------------- */
 
 TBoxSession *tbox_session_start(const TBoxTdApi *api, const char *session_dir,
-                                long api_id, const char *api_hash) {
+                                long api_id, const char *api_hash,
+                                const char *db_key) {
     if (api == NULL || session_dir == NULL || session_dir[0] == '\0' ||
         api_id <= 0 || api_hash == NULL || api_hash[0] == '\0') {
         return NULL;
@@ -424,6 +431,9 @@ TBoxSession *tbox_session_start(const TBoxTdApi *api, const char *session_dir,
 #endif
     s->api_id = api_id;
     snprintf(s->api_hash, sizeof s->api_hash, "%s", api_hash);
+    if (db_key != NULL) {
+        snprintf(s->db_key, sizeof s->db_key, "%s", db_key);
+    }
     join_dir(s->dbdir, sizeof s->dbdir, session_dir, "tdlib");
     join_dir(s->filesdir, sizeof s->filesdir, session_dir, "files");
     /* tdlib creates its database directory but NOT its parent, so a
@@ -512,6 +522,19 @@ void tbox_session_submit_password(TBoxSession *s, const char *password) {
     cJSON_AddStringToObject(req, "@type", "checkAuthenticationPassword");
     cJSON_AddStringToObject(req, "password", password);
     cJSON_AddStringToObject(req, "@extra", "pwd");
+    session_send(s, req);
+}
+
+void tbox_session_logout(TBoxSession *s) {
+    if (s == NULL) {
+        return;
+    }
+    /* S10: TDLib logOut. It removes the session on Telegram's side and
+     * leads to authorizationStateClosed; it deletes nothing the user
+     * stored. */
+    cJSON *req = cJSON_CreateObject();
+    cJSON_AddStringToObject(req, "@type", "logOut");
+    cJSON_AddStringToObject(req, "@extra", "logout");
     session_send(s, req);
 }
 

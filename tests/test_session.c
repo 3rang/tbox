@@ -29,6 +29,11 @@ static int take(TBoxSession *s, TBoxSessionEventOut *out) {
     return tbox_session_take_event(s, out, 3000);
 }
 
+/* Non-blocking drain step: returns 1 if an event was ready now. */
+static int take_now(TBoxSession *s, TBoxSessionEventOut *out) {
+    return tbox_session_take_event(s, out, 0);
+}
+
 /* The caller owns the payload (heap, spec 6.6): compare it, then free it.
  * The test compares through this helper so every take that reads data
  * releases it. */
@@ -74,7 +79,7 @@ static void test_event_delivery_never_drops(void) {
     usleep(300000);
 #endif
     FakeTd *fake = fake_td_start(8);
-    TBoxSession *s = tbox_session_start(&fake->api, DIR, 123, "hash");
+    TBoxSession *s = tbox_session_start(&fake->api, DIR, 123, "hash", NULL);
     assert(s != NULL);
 
     /* 20,000 connection updates: one connection NAME means one event (the
@@ -123,7 +128,7 @@ static void test_event_delivery_never_drops(void) {
     int expect = 0;
     int got = 0;
     TBoxSessionEventOut ev;
-    while (take(s, &ev)) {
+    while (take_now(s, &ev)) {
         if (ev.type == TBOX_SESSION_EV_CATALOG_CHANGED) {
             assert(strcmp(ev.data, "*") == 0);
             free(ev.data);
@@ -160,7 +165,7 @@ static void test_live_reader_keeps_every_event(void) {
     usleep(300000);
 #endif
     FakeTd *fake = fake_td_start(10);
-    TBoxSession *s = tbox_session_start(&fake->api, DIR, 123, "hash");
+    TBoxSession *s = tbox_session_start(&fake->api, DIR, 123, "hash", NULL);
     assert(s != NULL);
 
     /* The engine is fed 20,000 distinct events while the caller reads
@@ -182,7 +187,7 @@ static void test_live_reader_keeps_every_event(void) {
                 fake_td_enqueue(fake, buf);
             }
         }
-        while (take(s, &ev)) {
+        while (take_now(s, &ev)) {
             if (ev.type == TBOX_SESSION_EV_CATALOG_CHANGED) {
                 free(ev.data);
                 continue;
@@ -195,7 +200,17 @@ static void test_live_reader_keeps_every_event(void) {
             got++;
         }
     }
-    while (got < 20000 && take(s, &ev)) {
+    unsigned waited = 0;
+    while (got < 20000 && waited < 15000) {
+        if (!take_now(s, &ev)) {
+#ifdef _WIN32
+            Sleep(5);
+#else
+            usleep(5000);
+#endif
+            waited += 5;
+            continue;
+        }
         if (ev.type == TBOX_SESSION_EV_CATALOG_CHANGED) {
             free(ev.data);
             continue;
@@ -225,7 +240,7 @@ static void test_progress_events_do_not_clog(void) {
     usleep(300000);
 #endif
     FakeTd *fake = fake_td_start(9);
-    TBoxSession *s = tbox_session_start(&fake->api, DIR, 123, "hash");
+    TBoxSession *s = tbox_session_start(&fake->api, DIR, 123, "hash", NULL);
     assert(s != NULL);
 
     /* A stalled front gets flooded with progress for two ops, then the
@@ -257,7 +272,7 @@ static void test_progress_events_do_not_clog(void) {
     int saw_conn = 0;
     int saw_auth = 0;
     TBoxSessionEventOut ev;
-    while (take(s, &ev)) {
+    while (take_now(s, &ev)) {
         if (ev.type == TBOX_SESSION_EV_CONNECTION &&
             ev.data != NULL && strcmp(ev.data, "connectionStateReady") == 0) {
             saw_conn = 1;
@@ -281,11 +296,11 @@ static void test_progress_events_do_not_clog(void) {
 int main(void) {
     /* bad input is refused, not half-started */
     FakeTd *fake = fake_td_start(7);
-    assert(tbox_session_start(&fake->api, "", 123, "hash") == NULL);
-    assert(tbox_session_start(&fake->api, DIR, 0, "hash") == NULL);
+    assert(tbox_session_start(&fake->api, "", 123, "hash", NULL) == NULL);
+    assert(tbox_session_start(&fake->api, DIR, 0, "hash", NULL) == NULL);
 
     /* 1. start: dirs exist, parameters go out eagerly, no cue needed */
-    TBoxSession *s = tbox_session_start(&fake->api, DIR, 123, "hash");
+    TBoxSession *s = tbox_session_start(&fake->api, DIR, 123, "hash", NULL);
     assert(s != NULL);
     assert(TBOX_ACCESS("tbox_session_test/tdlib", TBOX_F_OK) == 0);
     assert(TBOX_ACCESS("tbox_session_test/files", TBOX_F_OK) == 0);

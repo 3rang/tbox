@@ -89,7 +89,8 @@ int tbox_cmd_login(const char *session_dir, const char *arg_api_id, const char *
         return TBOX_ERROR;
     }
 
-    TBoxSession *s = tbox_session_start(tbox_td_api(), session_dir, api_id, api_hash);
+    TBoxSession *s = tbox_session_start(tbox_td_api(), session_dir, api_id, api_hash,
+                                        NULL);
     if (s == NULL) {
         fprintf(stderr, "error: could not start the tdlib session\n");
         return TBOX_ERROR;

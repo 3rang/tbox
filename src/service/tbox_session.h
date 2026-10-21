@@ -68,10 +68,14 @@ typedef struct TBoxSession TBoxSession;
  * setTdlibParameters eagerly (this tdlib build does not emit the opening
  * cue; the FSM row still catches a rejection).
  *
+ * db_key is the TDLib database encryption key (S5), base64, or NULL/empty
+ * for an unencrypted session; it is a secret and is never logged.
+ *
  * api is injected so tests run without the real dll. Returns NULL and
  * leaves nothing running if any step fails. */
 TBoxSession *tbox_session_start(const TBoxTdApi *api, const char *session_dir,
-                                long api_id, const char *api_hash);
+                                long api_id, const char *api_hash,
+                                const char *db_key);
 
 /* Waits up to timeout_ms for the next event. Returns 1 and fills out, or 0
  * on timeout. Events come out in the order they happened. out->data is
@@ -91,6 +95,11 @@ int tbox_session_progress_dropped(TBoxSession *s);
 
 /* Answer to PASSWORD_NEEDED. Callable any time after start. */
 void tbox_session_submit_password(TBoxSession *s, const char *password);
+
+/* S10: asks tdlib to log out (TDLib logOut). Nothing is deleted on
+ * Telegram; auth.closed follows once tdlib finishes. Safe to call more
+ * than once. */
+void tbox_session_logout(TBoxSession *s);
 
 /* Asks tdlib to close the session (valid once authorized); the CLOSED
  * event follows. Safe to call more than once. */
