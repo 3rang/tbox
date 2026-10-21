@@ -13,6 +13,24 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 add_library(cjson STATIC third_party/cjson/cJSON.c)
 target_include_directories(cjson PUBLIC third_party/cjson)
 
+# tbox_util_log — the engine's log file: one-line JSON records
+# (spec 9.5), every text redacted by log_redact() before it is written (S6),
+# rotated by size at 5 MiB keeping 3 files. Depends only on cjson, so its
+# tests run without tdjson (CI-friendly).
+add_library(tbox_util_log STATIC src/util/log.c)
+target_include_directories(tbox_util_log PUBLIC src)
+target_link_libraries(tbox_util_log PUBLIC cjson)
+if(MSVC)
+  target_compile_options(tbox_util_log PRIVATE /W4)
+endif()
+
+add_executable(test_tbox_log tests/test_log.c)
+target_link_libraries(test_tbox_log PRIVATE tbox_util_log)
+add_test(NAME util_log COMMAND test_tbox_log)
+if(MSVC)
+  target_compile_options(test_tbox_log PRIVATE /W4)
+endif()
+
 # tbox_td_core - auth FSM + client loop + the UI-free session engine.
 # Injectable TBoxTdApi: no native references, so its tests run without the
 # real dll (CI-friendly).
