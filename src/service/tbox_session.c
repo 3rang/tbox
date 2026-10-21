@@ -16,21 +16,18 @@
 #include <string.h>
 
 #ifdef _WIN32
-#include <direct.h>
 #include <windows.h>
 #define TBOX_SLEEP_MS(ms) Sleep(ms)
-#define TBOX_MKDIR(path) _mkdir(path)
 #else
 #include <pthread.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #define TBOX_SLEEP_MS(ms) usleep((ms) * 1000)
-#define TBOX_MKDIR(path) mkdir(path, 0755)
 #endif
 
 #include "cJSON.h"
 #include "td/tbox_td_auth.h"
 #include "td/tbox_td_client.h"
+#include "util/fsx.h"
 
 #define TBOX_EVQ 32     /* pending events before the oldest is dropped */
 #define TBOX_POLL_MS 5  /* take_event polling granularity */
@@ -292,22 +289,6 @@ static void join_dir(char *dst, size_t cap, const char *base, const char *leaf) 
     snprintf(dst, cap, "%s/%s", clean, leaf);
 }
 
-/* Creates every component of path. tdlib creates its database directory
- * but NOT its parent, so a fresh "session/tdlib" failed with
- * "Can't create directory" until the parent existed. Existence is fine. */
-static void session_mkdirs(const char *path) {
-    char tmp[600];
-    snprintf(tmp, sizeof tmp, "%s", path);
-    for (char *p = tmp + 1; *p != '\0'; p++) {
-        if (*p == '/' || *p == '\\') {
-            *p = '\0';
-            (void)TBOX_MKDIR(tmp);
-            *p = '/';
-        }
-    }
-    (void)TBOX_MKDIR(tmp);
-}
-
 /* ---- public API ----------------------------------------------------- */
 
 TBoxSession *tbox_session_start(const TBoxTdApi *api, const char *session_dir,
@@ -329,8 +310,12 @@ TBoxSession *tbox_session_start(const TBoxTdApi *api, const char *session_dir,
     snprintf(s->api_hash, sizeof s->api_hash, "%s", api_hash);
     join_dir(s->dbdir, sizeof s->dbdir, session_dir, "tdlib");
     join_dir(s->filesdir, sizeof s->filesdir, session_dir, "files");
-    session_mkdirs(s->dbdir);
-    session_mkdirs(s->filesdir);
+    /* tdlib creates its database directory but NOT its parent, so a
+     * fresh "session/tdlib" failed with "Can't create directory" until
+     * the parent existed. Existence is fine; a failure surfaces through
+     * tdlib's own error, so the status is not checked here. */
+    (void)tbox_fsx_mkdirs(s->dbdir);
+    (void)tbox_fsx_mkdirs(s->filesdir);
     s->state = (int)TBOX_AUTH_START;
 
     s->client = tbox_td_client_open(api, 0);

@@ -23,14 +23,13 @@
 #include <time.h>
 
 #ifdef _WIN32
-#include <windows.h>
+#include <windows.h> /* CRITICAL_SECTION */
 #else
 #include <pthread.h>
-#include <sys/stat.h>
-#define TBOX_MKDIR(path) mkdir(path, 0755)
 #endif
 
 #include "cJSON.h"
+#include "util/fsx.h"
 
 /* Path buffers: same 600-byte path rule as the session code; work buffers
  * for redaction are stack arrays so threads never share them. */
@@ -220,111 +219,9 @@ char *tbox_log_redact(char *out, size_t out_size, const char *src) {
 
 /* ---- files ------------------------------------------------------------ */
 
-/* Every file operation in this module goes through these wrappers, so on
- * Windows each one converts UTF-8 to UTF-16 and calls the W form (§16): a
- * profile directory under a non-ASCII user name must work exactly like an
- * ASCII one. Invalid UTF-8 degrades to U+FFFD instead of failing - a
- * substituted character in a diagnostic path beats no log at all. */
-#ifdef _WIN32
-#define TBOX_LOG_WIDE (TBOX_LOG_PATH + 16)
-
-static int log_wide(const char *utf8, wchar_t *out, int cap) {
-    int n = MultiByteToWideChar(CP_UTF8, 0, utf8, -1, out, cap);
-    return n > 0 ? 0 : -1;
-}
-
-static int log_mkdir_w(const char *utf8) {
-    wchar_t w[TBOX_LOG_WIDE];
-    if (log_wide(utf8, w, TBOX_LOG_WIDE) != 0) {
-        return -1;
-    }
-    return CreateDirectoryW(w, NULL) ? 0 : -1;
-}
-
-static int log_is_dir_w(const char *utf8) {
-    wchar_t w[TBOX_LOG_WIDE];
-    DWORD attrs;
-    if (log_wide(utf8, w, TBOX_LOG_WIDE) != 0) {
-        return 0;
-    }
-    attrs = GetFileAttributesW(w);
-    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
-}
-
-static int log_remove_w(const char *utf8) {
-    wchar_t w[TBOX_LOG_WIDE];
-    if (log_wide(utf8, w, TBOX_LOG_WIDE) != 0) {
-        return -1;
-    }
-    return DeleteFileW(w) ? 0 : -1;
-}
-
-static int log_rename_w(const char *from, const char *to) {
-    wchar_t wf[TBOX_LOG_WIDE];
-    wchar_t wt[TBOX_LOG_WIDE];
-    if (log_wide(from, wf, TBOX_LOG_WIDE) != 0 ||
-        log_wide(to, wt, TBOX_LOG_WIDE) != 0) {
-        return -1;
-    }
-    /* MSVC declares no _wrename; kernel32's W form matches rename()
-     * semantics (fails on an existing target) */
-    return MoveFileW(wf, wt) ? 0 : -1;
-}
-
-static FILE *log_fopen_w(const char *utf8, const char *mode) {
-    wchar_t wpath[TBOX_LOG_WIDE];
-    wchar_t wmode[8];
-    FILE *f = NULL;
-    if (log_wide(utf8, wpath, TBOX_LOG_WIDE) != 0 ||
-        log_wide(mode, wmode, 8) != 0 ||
-        _wfopen_s(&f, wpath, wmode) != 0) {
-        return NULL;
-    }
-    return f;
-}
-#else
-static int log_mkdir_w(const char *path) {
-    return TBOX_MKDIR(path);
-}
-
-static int log_is_dir_w(const char *path) {
-    struct stat st;
-    return stat(path, &st) == 0 && S_ISDIR(st.st_mode) ? 1 : 0;
-}
-
-static int log_remove_w(const char *path) {
-    return remove(path);
-}
-
-static int log_rename_w(const char *from, const char *to) {
-    return rename(from, to);
-}
-
-static FILE *log_fopen_w(const char *path, const char *mode) {
-    return fopen(path, mode);
-}
-#endif
-
-/* Existence-tolerant recursive mkdir (mirrors session_mkdirs in the
- * session engine); succeeds on "already there", fails on anything else. */
-static int log_mkdirs(const char *path) {
-    char tmp[TBOX_LOG_PATH];
-    int n = snprintf(tmp, sizeof tmp, "%s", path);
-    if (n < 0 || (size_t)n >= sizeof tmp) {
-        return -1;
-    }
-    for (char *p = tmp + 1; *p != '\0'; p++) {
-        if (*p == '/' || *p == '\\') {
-            *p = '\0';
-            (void)log_mkdir_w(tmp); /* intermediate components: best effort */
-            *p = '/';
-        }
-    }
-    if (log_mkdir_w(tmp) != 0 && !log_is_dir_w(tmp)) {
-        return -1;
-    }
-    return 0;
-}
+/* All file operations go through util/fsx, the one doorway from a UTF-8
+ * path to the OS: W functions on Windows, so a profile directory under a
+ * non-ASCII user name works exactly like an ASCII one. */
 
 /* Builds <path>[.<n>]; the snprintf result is checked (§16) - truncation
  * cannot happen by construction (600-byte path + 3-char suffix), and a
@@ -346,24 +243,23 @@ static TBoxLogStatus log_rotate(TBoxLog *log) {
     if (log->keep_files >= 2) {
         /* the file that would fall out of the window ages out first */
         if (log_path_n(log, log->keep_files - 1, to, sizeof to) == 0) {
-            (void)log_remove_w(to);
+            (void)tbox_fsx_remove(to);
         }
         for (int i = log->keep_files - 2; i >= 1; i--) {
             if (log_path_n(log, i, from, sizeof from) != 0 ||
                 log_path_n(log, i + 1, to, sizeof to) != 0) {
                 break; /* cannot happen by construction; stay safe */
             }
-            (void)log_remove_w(to); /* rename needs a free target on Windows */
-            (void)log_rename_w(from, to);
+            (void)tbox_fsx_rename(from, to);
         }
         if (log_path_n(log, 1, to, sizeof to) == 0 &&
-            log_rename_w(log->path, to) != 0) {
-            (void)log_remove_w(log->path);
+            tbox_fsx_rename(log->path, to) != TBOX_FSX_OK) {
+            (void)tbox_fsx_remove(log->path);
         }
     } else {
-        (void)log_remove_w(log->path);
+        (void)tbox_fsx_remove(log->path);
     }
-    log->fp = log_fopen_w(log->path, "wb");
+    log->fp = tbox_fsx_fopen(log->path, "wb");
     if (log->fp == NULL) {
         return TBOX_LOG_E_OPEN;
     }
@@ -374,7 +270,7 @@ static TBoxLogStatus log_rotate(TBoxLog *log) {
 /* Reopens the current file after open/rotation failure or close, sized
  * from reality (the file may have grown on disk). */
 static TBoxLogStatus log_reopen(TBoxLog *log) {
-    log->fp = log_fopen_w(log->path, "ab");
+    log->fp = tbox_fsx_fopen(log->path, "ab");
     if (log->fp == NULL) {
         return TBOX_LOG_E_OPEN;
     }
@@ -412,7 +308,7 @@ TBoxLogStatus tbox_log_open(const char *dir, size_t rotate_bytes, int keep_files
         tbox_log_close(log);
         return TBOX_LOG_E_ARGS;
     }
-    if (log_mkdirs(logsdir) != 0) {
+    if (tbox_fsx_mkdirs(logsdir) != TBOX_FSX_OK) {
         tbox_log_close(log);
         return TBOX_LOG_E_MKDIR;
     }

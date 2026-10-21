@@ -13,13 +13,49 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 add_library(cjson STATIC third_party/cjson/cJSON.c)
 target_include_directories(cjson PUBLIC third_party/cjson)
 
+# tbox_util_fsx — filesystem primitives: UTF-8 paths through the Windows
+# W functions (coding rules), recursive mkdir, the spec 9.2 durable
+# replace and the spec 9.3 single-instance engine.lock. No tdjson, so
+# its tests run everywhere (CI-friendly).
+add_library(tbox_util_fsx STATIC src/util/fsx.c)
+target_include_directories(tbox_util_fsx PUBLIC src)
+if(MSVC)
+  target_compile_options(tbox_util_fsx PRIVATE /W4)
+endif()
+
+add_executable(test_tbox_fsx tests/test_fsx.c)
+target_link_libraries(test_tbox_fsx PRIVATE tbox_util_fsx)
+add_test(NAME util_fsx COMMAND test_tbox_fsx)
+if(MSVC)
+  target_compile_options(test_tbox_fsx PRIVATE /W4)
+endif()
+
+# tbox_util_rand — OS CSPRNG for object/op IDs and the DB key (spec 3.2):
+# BCryptGenRandom (bcrypt.lib) on Windows, getrandom//dev/urandom on
+# POSIX. Never rand(). CI-friendly like fsx.
+add_library(tbox_util_rand STATIC src/util/rand.c)
+target_include_directories(tbox_util_rand PUBLIC src)
+if(WIN32)
+  target_link_libraries(tbox_util_rand PUBLIC bcrypt)
+endif()
+if(MSVC)
+  target_compile_options(tbox_util_rand PRIVATE /W4)
+endif()
+
+add_executable(test_tbox_rand tests/test_rand.c)
+target_link_libraries(test_tbox_rand PRIVATE tbox_util_rand)
+add_test(NAME util_rand COMMAND test_tbox_rand)
+if(MSVC)
+  target_compile_options(test_tbox_rand PRIVATE /W4)
+endif()
+
 # tbox_util_log — the engine's log file: one-line JSON records
 # (spec 9.5), every text redacted by log_redact() before it is written (S6),
-# rotated by size at 5 MiB keeping 3 files. Depends only on cjson, so its
-# tests run without tdjson (CI-friendly).
+# rotated by size at 5 MiB keeping 3 files. Depends only on cjson and
+# tbox_util_fsx, so its tests run without tdjson (CI-friendly).
 add_library(tbox_util_log STATIC src/util/log.c)
 target_include_directories(tbox_util_log PUBLIC src)
-target_link_libraries(tbox_util_log PUBLIC cjson)
+target_link_libraries(tbox_util_log PUBLIC cjson tbox_util_fsx)
 if(MSVC)
   target_compile_options(tbox_util_log PRIVATE /W4)
 endif()
@@ -40,7 +76,7 @@ add_library(tbox_td_core STATIC
   src/service/tbox_session.c
 )
 target_include_directories(tbox_td_core PUBLIC src)
-target_link_libraries(tbox_td_core PUBLIC cjson)
+target_link_libraries(tbox_td_core PUBLIC cjson tbox_util_fsx)
 
 # tbox_td — real tdjson bindings. The only library allowed to touch the
 # native symbols; linked through the import lib from tdjson-vendored.cmake.
