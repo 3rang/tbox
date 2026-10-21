@@ -44,6 +44,7 @@ add_library(tbox_core STATIC
   src/config.c
   src/auth.c
   src/chat.c
+  src/outbox.c
   src/session.c
   src/platform.c
 )
@@ -80,7 +81,7 @@ if(TBOX_BUILD_TESTS)
   add_library(tbox_fake_td STATIC tests/fake_td.c)
   target_link_libraries(tbox_fake_td PUBLIC tbox_core)
 
-  foreach(t test_td test_auth test_chat test_config)
+  foreach(t test_td test_auth test_chat test_config test_outbox)
     add_executable(${t} tests/${t}.c)
     target_link_libraries(${t} PRIVATE tbox_fake_td)
     add_test(NAME ${t} COMMAND ${t})
