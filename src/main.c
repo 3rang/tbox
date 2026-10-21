@@ -20,6 +20,7 @@ static const struct {
     { "logout", cmd_logout, "logout", "sign out and forget the session" },
     { "me", cmd_me, "me", "show the logged-in account" },
     { "search", cmd_search, "search <query>", "find chats by title or public @username" },
+    { "send", cmd_send, "send <chat> <text...>", "send a text message" },
 };
 
 static void usage(FILE *out) {

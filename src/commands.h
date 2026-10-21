@@ -13,6 +13,7 @@ int cmd_login(int argc, char **argv);
 int cmd_logout(int argc, char **argv);
 int cmd_me(int argc, char **argv);
 int cmd_search(int argc, char **argv);
+int cmd_send(int argc, char **argv);
 
 /* Print the logged-in account (shared by login and me). */
 int print_me(Td *td);
