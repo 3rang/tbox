@@ -35,6 +35,19 @@ static void raw_scalar(sqlite3 *h, const char *sql, char *out, size_t cap) {
     sqlite3_finalize(st);
 }
 
+/* 1 when a table of this name exists in the main schema. */
+static int table_exists(sqlite3 *h, const char *name) {
+    sqlite3_stmt *st = NULL;
+    assert(sqlite3_prepare_v2(
+               h, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?1",
+               -1, &st, NULL) == SQLITE_OK);
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    assert(sqlite3_step(st) == SQLITE_ROW);
+    int found = sqlite3_column_int(st, 0) > 0;
+    sqlite3_finalize(st);
+    return found;
+}
+
 static void test_migration_from_empty(void) {
     TBoxDb *db = NULL;
     assert(tbox_db_open(DIR, &db) == TBOX_DB_OK);
@@ -44,7 +57,7 @@ static void test_migration_from_empty(void) {
     assert(tbox_db_schema_version(db) == TBOX_DB_SCHEMA_VERSION);
     char v[32];
     assert(tbox_db_meta_get(db, TBOX_DB_META_SCHEMA_VERSION, v, sizeof v) == 1);
-    assert(strcmp(v, "1") == 0);
+    assert(strcmp(v, "2") == 0);
 
     /* a key that was never set is simply absent, not an error */
     assert(tbox_db_meta_get(db, "nope", v, sizeof v) == 0);
@@ -71,6 +84,13 @@ static void test_migration_from_empty(void) {
     assert(strcmp(v, "wal") == 0);
     raw_scalar(h, "PRAGMA foreign_keys", v, sizeof v);
     assert(strcmp(v, "1") == 0);
+
+    /* v2 created the spec 7.5 catalog tables (no FTS yet) */
+    assert(table_exists(h, "meta"));
+    assert(table_exists(h, "messages"));
+    assert(table_exists(h, "objects"));
+    assert(table_exists(h, "ops"));
+    assert(!table_exists(h, "search_fts"));
     sqlite3_close(h);
 
     printf("store: fresh file migrates to v%d with WAL + foreign_keys\n",
@@ -117,7 +137,7 @@ static void test_refuses_a_newer_schema(void) {
 
     /* put it back so a rerun of this test starts clean */
     h = raw_open(path);
-    sqlite3_exec(h, "UPDATE meta SET value='1' WHERE key='schema_version'",
+    sqlite3_exec(h, "UPDATE meta SET value='2' WHERE key='schema_version'",
                  NULL, NULL, NULL);
     sqlite3_close(h);
     printf("store: a newer on-disk schema is refused\n");
@@ -133,6 +153,48 @@ static void test_bad_arguments(void) {
     printf("store: bad arguments refused, NULL close is a no-op\n");
 }
 
+/* A file written by the previous build (v1: meta only) must upgrade in place:
+ * the meta rows survive and the catalog tables appear. This is the promise
+ * that makes the numbered migrations worth having. */
+static void test_upgrade_from_v1(void) {
+    const char *dir = "tbox_store_test_v1";
+    (void)tbox_fsx_remove("tbox_store_test_v1/index.db");
+    (void)tbox_fsx_remove("tbox_store_test_v1/index.db-wal");
+    (void)tbox_fsx_remove("tbox_store_test_v1/index.db-shm");
+    assert(tbox_fsx_mkdirs(dir) == TBOX_FSX_OK);
+
+    /* hand-build exactly what v1 produced, with a meta row to preserve */
+    char path[256];
+    snprintf(path, sizeof path, "%s/index.db", dir);
+    sqlite3 *h = raw_open(path);
+    char *err = NULL;
+    assert(sqlite3_exec(h,
+                        "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+                        "INSERT INTO meta(key,value) VALUES('schema_version','1');"
+                        "INSERT INTO meta(key,value) VALUES('db_key_set','1');",
+                        NULL, NULL, &err) == SQLITE_OK);
+    sqlite3_free(err);
+    sqlite3_close(h);
+
+    TBoxDb *db = NULL;
+    assert(tbox_db_open(dir, &db) == TBOX_DB_OK);
+    assert(tbox_db_schema_version(db) == TBOX_DB_SCHEMA_VERSION);
+    char v[32];
+    /* the old row survived the upgrade */
+    assert(tbox_db_meta_get(db, TBOX_DB_META_DB_KEY_SET, v, sizeof v) == 1);
+    assert(strcmp(v, "1") == 0);
+    tbox_db_close(db);
+
+    /* and the catalog tables are there now */
+    h = raw_open(path);
+    assert(table_exists(h, "messages"));
+    assert(table_exists(h, "objects"));
+    assert(table_exists(h, "ops"));
+    sqlite3_close(h);
+    printf("store: a v1 file upgrades to v%d keeping its meta\n",
+           TBOX_DB_SCHEMA_VERSION);
+}
+
 int main(void) {
     (void)tbox_fsx_remove("tbox_store_test/index.db");
     (void)tbox_fsx_remove("tbox_store_test/index.db-wal");
@@ -142,6 +204,7 @@ int main(void) {
     test_bad_arguments();
     test_migration_from_empty();
     test_reopen_is_idempotent();
+    test_upgrade_from_v1();
     test_refuses_a_newer_schema();
     printf("store OK\n");
     return 0;

@@ -36,14 +36,68 @@ typedef struct TBoxDbMigration {
     const char *sql;
 } TBoxDbMigration;
 
-/* v1: the meta table only. The catalog tables (messages, objects, ops) land
- * in their own migration; splitting them keeps the spec's promise that
- * index.db is built up in numbered steps rather than one grand script. */
+/* v1: the meta table only. v2: the catalog tables (spec 7.5) - messages (one
+ * row per relevant message seen in Saved Messages), objects (the resolved
+ * view, rebuilt by catalog/resolve.c) and ops (the durable operation
+ * journal). The search_fts virtual table is not created here (search comes
+ * later; this migration is deliberately without FTS). */
 static const TBoxDbMigration MIGRATIONS[] = {
     { 1,
       "CREATE TABLE meta(\n"
       "  key   TEXT PRIMARY KEY,\n"
       "  value TEXT NOT NULL\n"
+      ");\n" },
+    { 2,
+      "CREATE TABLE messages(\n"
+      "  message_id   TEXT PRIMARY KEY,\n"
+      "  kind         TEXT NOT NULL,\n"
+      "  date         INTEGER NOT NULL,\n"
+      "  file_id      INTEGER,\n"
+      "  remote_id    TEXT,\n"
+      "  mime         TEXT,\n"
+      "  size         INTEGER,\n"
+      "  orig_name    TEXT,\n"
+      "  text         TEXT,\n"
+      "  rec_o        TEXT,\n"
+      "  rec_p        TEXT,\n"
+      "  rec_n        TEXT,\n"
+      "  rec_r        INTEGER,\n"
+      "  rec_k        TEXT,\n"
+      "  rec_t        INTEGER,\n"
+      "  rec_h        TEXT,\n"
+      "  rec_q        TEXT,\n"
+      "  rec_src      TEXT,\n"
+      "  bad_record   INTEGER NOT NULL DEFAULT 0\n"
+      ");\n"
+      "CREATE INDEX messages_o   ON messages(rec_o);\n"
+      "CREATE INDEX messages_q   ON messages(rec_q);\n"
+      "CREATE INDEX messages_src ON messages(rec_src);\n"
+      "CREATE TABLE objects(\n"
+      "  object_id    TEXT PRIMARY KEY,\n"
+      "  kind         TEXT NOT NULL,\n"
+      "  parent_id    TEXT NOT NULL,\n"
+      "  name         TEXT NOT NULL,\n"
+      "  rev          INTEGER NOT NULL,\n"
+      "  message_id   TEXT NOT NULL,\n"
+      "  size         INTEGER,\n"
+      "  sha256       TEXT,\n"
+      "  mtime        INTEGER,\n"
+      "  trashed_at   INTEGER,\n"
+      "  conflict     INTEGER NOT NULL DEFAULT 0\n"
+      ");\n"
+      "CREATE INDEX objects_parent ON objects(parent_id, name);\n"
+      "CREATE TABLE ops(\n"
+      "  op_id        TEXT PRIMARY KEY,\n"
+      "  kind         TEXT NOT NULL,\n"
+      "  state        TEXT NOT NULL,\n"
+      "  args_json    TEXT NOT NULL,\n"
+      "  temp_msg_id  TEXT,\n"
+      "  result_json  TEXT,\n"
+      "  error_code   TEXT,\n"
+      "  attempts     INTEGER NOT NULL DEFAULT 0,\n"
+      "  next_try_at  INTEGER,\n"
+      "  created_at   INTEGER NOT NULL,\n"
+      "  updated_at   INTEGER NOT NULL\n"
       ");\n" },
 };
 

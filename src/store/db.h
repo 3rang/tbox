@@ -8,7 +8,8 @@
  * UI never opens it). This layer knows only how to open the file, bring its
  * schema up to date in a transaction, and read/write the small `meta` table
  * (schema_version, account_user_id, last_full_scan_at, db_key_set, ...).
- * The catalog tables arrive with their own migrations.
+ * The catalog tables (messages, objects, ops; spec 7.5) are created here too;
+ * the code that fills and reads them lives in the catalog and sync modules.
  *
  * Concurrency: one connection, owned by the engine's state thread. The
  * library is compiled threadsafe, but no two threads share a connection
@@ -32,12 +33,17 @@ typedef enum TBoxDbStatus {
 typedef struct TBoxDb TBoxDb;
 
 /* The schema version this build writes. Bump it and append a migration when
- * a table changes; never edit an existing migration. */
-#define TBOX_DB_SCHEMA_VERSION 1
+ * a table changes; never edit an existing migration. v1 is the meta table,
+ * v2 adds the catalog tables (messages, objects, ops). */
+#define TBOX_DB_SCHEMA_VERSION 2
 
 /* meta keys used by the engine. */
-#define TBOX_DB_META_SCHEMA_VERSION "schema_version"
-#define TBOX_DB_META_DB_KEY_SET     "db_key_set"
+#define TBOX_DB_META_SCHEMA_VERSION   "schema_version"
+#define TBOX_DB_META_DB_KEY_SET       "db_key_set"
+#define TBOX_DB_META_ACCOUNT_USER_ID  "account_user_id"
+#define TBOX_DB_META_LAST_FULL_SCAN   "last_full_scan_at"
+#define TBOX_DB_META_SCAN_COMPLETE    "scan_complete"
+#define TBOX_DB_META_CACHE_LIMIT      "cache_limit_bytes"
 
 /* Opens <profile_dir>/index.db, creating it if missing, sets WAL +
  * foreign_keys + synchronous=NORMAL (spec 7.5) and runs pending migrations
