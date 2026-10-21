@@ -29,6 +29,12 @@ Needs Visual Studio Build Tools (MSVC via vcvars), CMake, and Python 3.11+.
 Step 2 is why one command is enough: the engine stops being a separate thing
 you have to find, and becomes part of the app.
 
+Every push and pull request runs the same two gates on Windows — the C
+engine plus ctest, then the front's unit tests — in
+`.github/workflows/ci.yml`. CI is fully offline: the TDLib runtime and the
+SQLite amalgamation are vendored, and the C tests drive a fake TDLib, so no
+Telegram account, network access or secret is ever needed.
+
 Working on one half only:
 
 ```powershell
@@ -79,8 +85,8 @@ Prefer the command line? The same flow exists there:
 .venv\Scripts\tbox.exe login    # shows a QR code; scan it with your phone
 ```
 
-MVP status: `setup` and `login` exist today. The archive commands (put, get,
-list, ...) come next, built on the same engine.
+MVP status: `setup`, `login` and `logout` exist today. The archive commands
+(put, get, list, ...) come next, built on the same engine.
 
 ### Where things live
 
@@ -89,6 +95,8 @@ list, ...) come next, built on the same engine.
 | `%LOCALAPPDATA%\tbox\.env` | your api_id (local only, never committed) |
 | your OS secure store (service `tbox`) | the api_hash and the TDLib database key |
 | `%LOCALAPPDATA%\tbox\session\` | TDLib's database — deleting it means scanning again |
+| `%LOCALAPPDATA%\tbox\index.db` | tbox's own catalog (SQLite); the engine owns it, the UI never opens it |
+| `%LOCALAPPDATA%\tbox\logs\` | redacted engine logs |
 | `build\` | the compiled engine and its test binaries (gitignored) |
 | `front\src\tbox\bin\` | the engine copied into the package by `build.ps1` |
 | `dist\tbox.exe` | the app as one windowed file (engine inside) |
@@ -98,13 +106,17 @@ list, ...) come next, built on the same engine.
 
 | Command | What it does |
 |---|---|
-| `tbox setup` | ask for the Telegram app credentials and save them |
+| `tbox setup` | ask for the Telegram app credentials and save them (api_hash to the secure store) |
 | `tbox login` | link this computer (QR; asks for credentials on the first run) |
 | `tbox login -v` | same, plus every raw event the engine sends |
+| `tbox logout` | log out on Telegram (your local data is kept) |
 | `tbox --version` | print the version |
 
-The desktop app has no commands beyond the developer-only `--selftest`
-(which the build script uses to check a frozen bundle).
+The window's signed-in screen offers the same two actions as buttons: **Log
+out of Telegram** (keeps local data) and **Remove local data** (deletes this
+computer's session and settings after logging out — your Telegram account is
+never touched). The desktop app has no commands beyond the developer-only
+`--selftest` (which the build script uses to check a frozen bundle).
 
 ## Troubleshooting
 
@@ -116,7 +128,7 @@ The desktop app has no commands beyond the developer-only `--selftest`
 | The window says "Something went wrong" | same cause as the error above; "Change the keys" reopens the first-run screen |
 | `dist\tbox.exe` starts but no window appears | your antivirus may block a freshly built exe; the same app runs from `.venv\Scripts\tbox.exe login` |
 | The QR shows as `##` pairs | your terminal is not UTF-8; set `PYTHONIOENCODING=utf-8` or use Windows Terminal (the window is unaffected) |
-| You want to start over | delete `%LOCALAPPDATA%\tbox\session\` and log in again |
+| You want to start over | in the app use "Remove local data", or delete `%LOCALAPPDATA%\tbox\session\` and log in again |
 | Nothing seems to happen | `tbox login -v` — raw engine events, including connection state |
 
 ## How the two halves talk
@@ -127,46 +139,120 @@ live in C — the front owns all of that, and passes credentials and paths in.
 
 There are two fronts over the same engine: the window (`front/src/tbox/gui/`,
 which runs the engine on its own thread so the UI never blocks) and the
-command line (`front/src/tbox/cli.py`). Both read the events below and nothing
-else, which is why they behave identically.
+command line (`front/src/tbox/cli.py`). Both speak the protocol below and
+nothing else, which is why they behave identically.
 
 ```
-python front (settings, UX, index)  →  tbox C engine  →  tdjson.dll
++-------------------------------------------------------------+
+| UI  (window and command line)                               |
++--------------------------+----------------------------------+
+                           | JSON lines over the child's stdin/stdout
++--------------------------v----------------------------------+
+| C engine (tbox-engine serve <profile-dir>)                  |
+|   stdio transport -> engine loop (one thread owns all state |
+|                      and is the only writer to index.db)    |
+|   TDLib receive thread -> event queue -> engine loop        |
++--------------------------+----------------------------------+
+                           |
+                    TDLib (tdjson) -> Telegram Saved Messages
 ```
 
-Only the C engine touches tdjson. `src/service/tbox_session.*` is that
-engine: it owns the session directory, the TDLib parameters, the auth state
-machine and the request/reply plumbing, and it speaks one line of JSON per
-event:
+The desktop app starts `tbox-engine serve <profile-dir>` once and keeps it
+running (spec §6.1); the front never spawns one engine per command. Only the
+C engine touches tdjson. The engine loop is UI-free and transport-pluggable:
+it takes commands through one call and emits output through a callback, so
+the stdio wrapper is thin and a future embedding would not rewrite it.
 
+### The protocol in one screen
+
+One JSON object per line, UTF-8, newline-terminated. Requests carry an
+integer `id` and get exactly one response; anything without an `id` is an
+event. All Telegram IDs are sent as **strings** (they can exceed 2^53).
+
+```jsonc
+// front -> engine
+{"id": 7, "cmd": "auth.start", "args": {"api_id": "35982092", "api_hash": "...", "db_key": "..."}}
+
+// engine -> front: success
+{"id": 7, "ok": true, "result": {}}
+
+// engine -> front: error (one of the spec's codes)
+{"id": 7, "ok": false, "error": {"code": "BAD_ARGS", "message": "...", "retryable": false}}
+
+// engine -> front: an event, data nested under "data"
+{"event": "auth.state", "data": {"state": "WAIT_QR"}}
+{"event": "auth.qr", "data": {"link": "tg://login?token=..."}}   // never logged
+{"event": "auth.password_needed", "data": {"hint": "..."}}
+{"event": "auth.ready", "data": {"display_name": "Your Name"}}
+{"event": "auth.closed", "data": {}}
+{"event": "conn.state", "data": {"state": "..."}}
+{"event": "engine.error", "data": {"code": 400, "message": "API_ID_INVALID"}}
 ```
-{"event":"auth_state","state":"WAIT_QR"}
-{"event":"qr_link","link":"tg://login?token=..."}
-{"event":"password_needed","hint":"..."}
-{"event":"ready","user":"..."}
-{"event":"closed"}
-{"event":"error","code":400,"message":"API_ID_INVALID"}
-```
+
+The commands that exist today are `hello`, `auth.start`, `auth.password`,
+`auth.logout`, `engine.status` and `engine.shutdown`; later stages add
+`sync.*`, `catalog.*`, `file.*`, `folder.*`, `trash.*` and `search.*`
+(spec §6.4). `serve` exits `0` on a clean shutdown, `2` when the profile is
+already in use, `3` for bad arguments and `4` for a database error.
 
 The engine is a child process, so a crash inside TDLib cannot take the front
-down with it, and the whole conversation can be logged and replayed. `tbox
-login` in C is the same engine with a tiny adapter, which is how the engine
-gets tested without Python.
+down with it, and the whole conversation can be logged and replayed.
+
+## Security notes
+
+These are the rules the code is held to (spec §5), all of them enforced by
+tests rather than good intentions:
+
+- **Secrets never touch disk in the clear.** The `api_hash` and the TDLib
+  database key live in your operating system's secure store via `keyring`
+  (service `tbox`). Only the non-secret `api_id` stays in `.env`. A legacy
+  `TG_API_HASH` line in `.env` is moved into the store on first use, and
+  kept in place — with a warning — if the store is unusable, so a credential
+  is never lost.
+- **Secrets never appear in argv, the environment, logs or crash output.**
+  They travel UI → engine only inside a protocol message over stdin. A grep
+  test (`scripts/check-no-argv-secrets.ps1`) fails the build if `api_hash`
+  ever returns to the command line.
+- **The local TDLib database is encrypted.** The front generates 32 random
+  bytes once, stores them base64 in the secure store, and sends them in
+  `auth.start`. A profile created before this existed is migrated once, after
+  `auth.ready`.
+- **Logs are redacted.** One `tbox_log_redact()` function is the only way logs
+  are written; it strips message text, captions, file names, QR links,
+  passwords, keys and phone numbers, keeping only IDs and error codes. It has
+  its own unit test.
+- **Logout is not deletion.** `auth.logout` calls TDLib's `logOut` — it ends
+  the session on Telegram and changes nothing there. "Remove local data" is a
+  separate action that deletes this computer's profile directory *after*
+  logging out.
+- **No network listener exists.** tbox never opens a port.
+- **Caption text is data, not code.** Every name that comes from Telegram is
+  treated as untrusted before it is written to disk.
+
 
 ## Layout
 
 ```
 build.ps1            one command -> app
-src/                 C engine (cli/, cmd/, service/, td/)
+src/                 C engine (cli/, cmd/, engine/, service/, store/, td/)
+  cli/               argv parsing + dispatch
+  cmd/               command bodies (serve, dev login)
+  engine/            the long-running engine loop + protocol
+  service/           UI-free session: TDLib params, auth FSM, event queue
+  store/             index.db: migrations, meta, pragmas (SQLite)
+  util/              log (redaction), rand, fsx
+  td/                the only code touching tdjson native symbols
 tests/               C tests (ctest gate)
 front/               Python front
-  src/tbox/          the package: config, core (engine driver), qr, cli
+  src/tbox/          the package: config, engine_client, secrets_store, qr, cli
   src/tbox/gui/      the window (theme, worker thread, screens)
   packaging/         the freezer: spec, icon drawing, entry point
   tests/             Python tests, including the window (headless)
-scripts/             build-native.ps1, fetch-tdjson, make-demo-gif.py
+scripts/             build-native.ps1, fetch-tdjson, fetch-sqlite, check-no-argv-secrets, make-demo-gif.py
+.github/workflows/   CI: build C + ctest + Python tests on Windows (offline)
 docs/                login-demo.gif, regenerated by scripts/make-demo-gif.py
-third_party/cjson    vendored JSON library
+third_party/cjson    vendored JSON library (MIT)
+third_party/sqlite   vendored SQLite amalgamation (public domain)
 vendor/              prebuilt TDLib runtime
 cmake/               tdjson import-lib + staging rules
 archive/             earlier designs and plans (local only)
