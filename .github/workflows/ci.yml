@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Tarang Patel
+#
+# Continuous integration: build the C engine, run ctest, run the front tests.
+#
+# Everything here is offline. The TDLib runtime and the SQLite amalgamation are
+# vendored in the repository, and the C tests drive a fake TDLib, so no
+# Telegram account, network access or secret is ever needed. The workflow is
+# deliberately the same two steps a person runs locally
+# (scripts/build-native.ps1, then the front's unittest suite) so a red build
+# always reproduces on a developer machine.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A newer push to the same branch makes an in-flight run pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: build + test (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # scripts/build-native.ps1 finds Visual Studio through vswhere (present
+      # on the runner image), cleans build/, configures with NMake, builds and
+      # runs ctest. The vendored SQLite amalgamation is compiled in, and the
+      # vendored tdjson DLLs are staged beside the engine.
+      - name: C engine: configure, build, ctest
+        shell: pwsh
+        run: |
+          ./scripts/build-native.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Front: install and unit tests
+        shell: pwsh
+        run: |
+          python -m venv .venv
+          ./.venv/Scripts/python.exe -m pip install -q -e "./front[gui]"
+          ./.venv/Scripts/python.exe -m unittest discover -s front/tests 2>$null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
