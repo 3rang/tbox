@@ -431,6 +431,11 @@ static void engine_recover_ops(TBoxEngine *e) {
     if (report.checked == 0) {
         return;
     }
+    /* The queue is the journal, and the runner only looks at it when it is
+     * told there is something to do. An operation that was left over from
+     * the last run has to be picked up now, not after the next command
+     * happens to come in. */
+    e->upload_pending = 1;
     char detail[160];
     snprintf(detail, sizeof detail,
              "%d open operation(s): %d already done, %d back in the queue",

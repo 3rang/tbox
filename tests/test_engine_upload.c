@@ -58,6 +58,9 @@ static const char *O_TAKEN = "fedcba9876543210fedcba9876543210";
 #define REAL_MSG_ID 901
 #define FILE_ID 9001
 
+/* The operation the last run left behind in the journal. */
+#define OP_LEFTOVER "0000000000000f01"
+
 /* ---- captured output ------------------------------------------------- */
 
 #define OUT_MAX 512
@@ -335,6 +338,15 @@ static char *answer(void *ctx, const char *request) {
 
 /* ---- engine thread --------------------------------------------------- */
 
+/* Throws away whatever the fake still holds. The replies of one run carry the
+ * same @extra the next run uses, so a second run has to start with a clean
+ * script. */
+static void fake_drain(FakeTd *f) {
+    while (f->api.receive(0.0) != NULL) {
+        /* keep throwing */
+    }
+}
+
 typedef struct Run {
     TBoxEngine *e;
     int rc;
@@ -591,6 +603,48 @@ int main(void) {
     assert(r.rc == 0);
 
     tbox_engine_free(e);
+
+    /* ---- an operation the last run left behind goes out when the engine
+     * starts again (spec 8.4) -------------------------------------------- */
+    /* The queue is the journal: an operation that was still open when the
+     * engine stopped goes back into the queue, and the engine looks for it
+     * when it starts - not when the next command happens to come in. */
+    assert(tbox_journal_insert(db, OP_LEFTOVER, TBOX_OP_KIND_UPLOAD,
+                                "{\"local_path\":\"tbox_engine_upload_test/"
+                                "hello.txt\",\"folder_id\":\"root\","
+                                "\"name\":\"leftover.txt\","
+                                "\"object_id\":\"aaaabbbbccccddddeeeeffff00001111\"}",
+                                100) == TBOX_DB_OK);
+
+    fake_drain(fake);
+
+    err = -1;
+    TBoxEngine *e2 = tbox_engine_new(&fake->api, &cfg, capture, &out, &err);
+    assert(e2 != NULL && err == 0);
+
+    Run r2;
+    memset(&r2, 0, sizeof r2);
+    r2.e = e2;
+    run_in_thread(&r2);
+
+    tbox_engine_push_command(e2,
+        "{\"id\":10,\"cmd\":\"auth.start\",\"args\":{\"api_id\":\"123\","
+        "\"api_hash\":\"deadbeef\"}}");
+    assert(wait_for_id(&out, 10, 3000) != NULL);
+
+    fake_td_enqueue(fake,
+        "{\"@type\":\"updateAuthorizationState\",\"authorization_state\":"
+        "{\"@type\":\"authorizationStateReady\"}}");
+
+    /* the operation that was left behind is sent, without anyone asking */
+    assert(wait_op_state(db, OP_LEFTOVER, "DONE", 20000) == 1);
+
+    tbox_engine_push_command(e2, "{\"id\":11,\"cmd\":\"engine.shutdown\"}");
+    assert(wait_for_id(&out, 11, 5000) != NULL);
+    join_thread(&r2);
+    assert(r2.rc == 0);
+
+    tbox_engine_free(e2);
     tbox_db_close(db);
     fake_td_free(fake);
     fake_chat_free(chat);
