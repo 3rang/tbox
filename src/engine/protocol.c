@@ -195,6 +195,25 @@ char *tbox_proto_response_err(long long id, TBoxProtoError code,
     return line;
 }
 
+char *tbox_proto_response_err_wait(long long id, const char *message,
+                                   long long retry_after) {
+    cJSON *o = cJSON_CreateObject();
+    if (o == NULL) {
+        return NULL;
+    }
+    cJSON_AddNumberToObject(o, "id", (double)id);
+    cJSON_AddBoolToObject(o, "ok", 0);
+    cJSON *e = cJSON_CreateObject();
+    cJSON_AddStringToObject(e, "code", tbox_proto_error_code(TBOX_PROTO_ERR_FLOOD_WAIT));
+    cJSON_AddStringToObject(e, "message", message != NULL ? message : "");
+    cJSON_AddBoolToObject(e, "retryable", 1);
+    cJSON_AddNumberToObject(e, "retry_after", (double)retry_after);
+    cJSON_AddItemToObject(o, "error", e);
+    char *line = cJSON_PrintUnformatted(o);
+    cJSON_Delete(o);
+    return line;
+}
+
 char *tbox_proto_event(const char *event, const cJSON *data) {
     if (event == NULL) {
         return NULL;

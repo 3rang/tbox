@@ -27,6 +27,9 @@ session.lock
 .cache/
 session/
 
+# Test profile dirs (the native tests create one each)
+tbox_*_test*/
+
 # Engine copied into the package by build.ps1 (built, not source)
 front/src/tbox/bin/
 

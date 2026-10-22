@@ -86,6 +86,11 @@ char *tbox_proto_response_ok(long long id, const cJSON *result);
 char *tbox_proto_response_err(long long id, TBoxProtoError code,
                               const char *message);
 
+/* The FLOOD_WAIT answer (spec 6.3): the same error shape, with the seconds
+ * to wait in "retry_after". */
+char *tbox_proto_response_err_wait(long long id, const char *message,
+                                   long long retry_after);
+
 /* Build an event line. data may be NULL (treated as {}). */
 char *tbox_proto_event(const char *event, const cJSON *data);
 

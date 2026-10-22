@@ -62,6 +62,13 @@ void tbox_cat_free_messages(TBoxMessageRow *rows, size_t count);
 
 /* ---- objects --------------------------------------------------------- */
 
+/* Rebuilds `objects` from the `messages` table (spec 7.4: objects is derived
+ * data, so the resolver is the only thing that may write it). The rows are
+ * loaded and re-resolved here, which is what makes an incremental change and
+ * a fresh scan land on the same catalog. objects/inbox may be NULL. */
+TBoxDbStatus tbox_cat_rebuild_objects(TBoxDb *db, long long *objects,
+                                      long long *inbox);
+
 /* Replaces the whole `objects` table with the resolver's output: it deletes
  * every row, then inserts the new ones. `objects` is derived data (7.5), so a
  * wholesale swap is exactly right and keeps resolve the single source of

@@ -8,7 +8,7 @@
  * message, an edit, a real delete. For each one it writes just that row, then
  * re-derives `objects` from the messages table, so the incremental path and a
  * fresh full scan can never disagree (that equivalence is the whole point of
- * task 1.6 and its test).
+ * the update path, and its test checks it).
  *
  * Updates for any other chat are ignored, as are the ones only Phase 2 cares
  * about (updateFile, updateMessageSendFailed, op mapping beyond the temp id).

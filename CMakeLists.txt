@@ -36,7 +36,7 @@ endif()
 # tbox_store — the index.db catalog over SQLite (spec 7.5). Its own target
 # so tests and the engine both link it, and so the SQLite amalgamation sits
 # behind one seam.
-add_library(tbox_store STATIC src/store/db.c src/store/catalog.c)
+add_library(tbox_store STATIC src/store/db.c src/store/catalog.c src/store/query.c)
 target_include_directories(tbox_store PUBLIC src)
 target_link_libraries(tbox_store PUBLIC sqlite3 tbox_catalog)
 if(MSVC)
@@ -154,10 +154,11 @@ target_include_directories(tbox_td PUBLIC src)
 add_library(tbox_engine STATIC
   src/engine/protocol.c
   src/engine/engine.c
+  src/engine/items.c
   src/engine/transport_stdio.c
 )
 target_include_directories(tbox_engine PUBLIC src)
-target_link_libraries(tbox_engine PUBLIC tbox_td_core cjson tbox_util_log tbox_store)
+target_link_libraries(tbox_engine PUBLIC tbox_td_core cjson tbox_util_log tbox_store tbox_sync)
 if(MSVC)
   target_compile_options(tbox_engine PRIVATE /W4)
 endif()
@@ -203,6 +204,16 @@ target_link_libraries(test_engine PRIVATE tbox_engine)
 add_test(NAME engine_loop COMMAND test_engine)
 if(MSVC)
   target_compile_options(test_engine PRIVATE /W4)
+endif()
+
+# The catalog commands (catalog.list, catalog.stat, catalog.summary,
+# sync.rescan) over the fake TDLib: the whole path from login to a filled
+# catalog, without a dll and without a network.
+add_executable(test_engine_catalog tests/test_engine_catalog.c)
+target_link_libraries(test_engine_catalog PRIVATE tbox_engine tbox_fake_chat)
+add_test(NAME engine_catalog COMMAND test_engine_catalog)
+if(MSVC)
+  target_compile_options(test_engine_catalog PRIVATE /W4)
 endif()
 
 # P1 guard (spec 5.1): secrets must never reach argv. A source grep, run as

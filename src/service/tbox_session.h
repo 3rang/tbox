@@ -50,6 +50,7 @@ typedef enum TBoxSessionEvent {
     TBOX_SESSION_EV_TRANSFER_FAILED,/* data = op_id, total() = error code */
     TBOX_SESSION_EV_SYNC_PROGRESS,  /* data = op_id, code = messages_scanned */
     TBOX_SESSION_EV_SYNC_DONE,      /* data = op_id, code = objects, total() = inbox_items */
+    TBOX_SESSION_EV_UPDATE,         /* data = one catalog-relevant TDLib update (JSON) */
 } TBoxSessionEvent;
 
 typedef struct TBoxSessionEventOut {
@@ -84,6 +85,32 @@ TBoxSession *tbox_session_start(const TBoxTdApi *api, const char *session_dir,
  * flags are set instead - see the header comment and spec 6.6. */
 int tbox_session_take_event(TBoxSession *s, TBoxSessionEventOut *out,
                             unsigned timeout_ms);
+
+/* The account's own user id, captured from the getMe reply sent when the
+ * session becomes ready (spec 8.1 step 7). 0 until then. */
+long long tbox_session_my_id(const TBoxSession *s);
+
+/* Whether the account is premium (auth.ready carries it, spec 6.5). */
+int tbox_session_is_premium(const TBoxSession *s);
+
+/* Names the Saved Messages chat (createPrivateChat(chat_id)). From then on
+ * only updates for that chat are queued as TBOX_SESSION_EV_UPDATE: the
+ * catalog never cares about any other chat (spec 8.3). Before it is set no
+ * update is queued; the startup scan covers that window. */
+void tbox_session_set_saved_chat(TBoxSession *s, long long chat_id);
+
+/* Sends one TDLib request and waits for its reply, so the engine loop can
+ * read history or a message without a callback tangle. `request_json` is a
+ * TDLib request object; any @extra in it is replaced with a private one.
+ * Returns the reply JSON (a TDLib object, possibly an `error`) which the
+ * caller frees, or NULL when no reply came within timeout_ms.
+ *
+ * Caller thread only (the engine loop): replies are drained on this thread,
+ * so calling this from the receive thread would deadlock. The loop is
+ * blocked for the duration, which is why the scan fetches one page at a
+ * time. */
+char *tbox_session_call(TBoxSession *s, const char *request_json,
+                        unsigned timeout_ms);
 
 /* Set when the queue overflowed and the engine must re-run an incremental
  * reconcile (spec 6.6); sticky for the life of the session. */

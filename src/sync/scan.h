@@ -51,4 +51,15 @@ int tbox_scan_full(TBoxDb *db, const TBoxScanHistory *history,
                    const char *op_id, long long now_unix,
                    TBoxScanEmitFn emit, void *emit_ctx, TBoxScanStats *stats);
 
+/* Spec 8.3 reconnect reconcile: page history from the newest message until a
+ * page contains an id already in `messages` and at least two pages have been
+ * read (or history ends), upserting each page. It deletes nothing - only a
+ * full scan may do that - so messages deleted while offline stay until the
+ * periodic scan or sync.rescan. Emits catalog.changed ["*"] when it wrote
+ * anything. Returns 0 on success, -1 when a page failed (rows already
+ * written stay; they are true data). */
+int tbox_sync_reconcile(TBoxDb *db, const TBoxScanHistory *history,
+                        TBoxScanEmitFn emit, void *emit_ctx,
+                        long long *messages_read);
+
 #endif /* TBOX_SYNC_SCAN_H */

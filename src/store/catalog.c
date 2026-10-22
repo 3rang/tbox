@@ -195,6 +195,62 @@ TBoxDbStatus tbox_cat_remap_temp_message(TBoxDb *db, const char *old_id,
     return rc == SQLITE_DONE ? TBOX_DB_OK : TBOX_DB_E_IO;
 }
 
+TBoxDbStatus tbox_cat_rebuild_objects(TBoxDb *db, long long *objects,
+                                      long long *inbox) {
+    TBoxMessageRow *rows = NULL;
+    size_t count = 0;
+    if (tbox_cat_load_messages(db, &rows, &count) != TBOX_DB_OK) {
+        return TBOX_DB_E_IO;
+    }
+    TBoxResolveMsg *views = NULL;
+    if (count > 0) {
+        views = calloc(count, sizeof *views);
+        if (views == NULL) {
+            tbox_cat_free_messages(rows, count);
+            return TBOX_DB_E_MEM;
+        }
+        for (size_t i = 0; i < count; i++) {
+            const TBoxMessageRow *r = &rows[i];
+            TBoxResolveMsg *v = &views[i];
+            memset(v, 0, sizeof *v);
+            v->message_id = r->message_id;
+            v->date = r->date;
+            v->orig_name = r->orig_name[0] != '\0' ? r->orig_name : NULL;
+            v->mime = r->mime[0] != '\0' ? r->mime : NULL;
+            v->has_size = r->has_size;
+            v->size = r->size;
+            v->bad_record = r->bad_record;
+            if (strcmp(r->kind, TBOX_MSG_KIND_FILE) == 0) {
+                v->kind = TBOX_MSG_FILE;
+                v->rec = r->rec;
+            } else if (strcmp(r->kind, TBOX_MSG_KIND_FOLDER) == 0) {
+                v->kind = TBOX_MSG_FOLDER;
+                v->rec = r->rec;
+            } else if (strcmp(r->kind, TBOX_MSG_KIND_UNMANAGED) == 0) {
+                v->kind = TBOX_MSG_UNMANAGED;
+            } else {
+                v->kind = TBOX_MSG_NOTE;
+            }
+        }
+    }
+    TBoxResolveResult res;
+    memset(&res, 0, sizeof res);
+    int ok = 0;
+    if (tbox_resolve(views, count, &res) == 0) {
+        if (objects != NULL) {
+            *objects = (long long)res.object_count;
+        }
+        if (inbox != NULL) {
+            *inbox = (long long)res.inbox_count;
+        }
+        ok = tbox_cat_replace_objects(db, &res) == TBOX_DB_OK;
+        tbox_resolve_result_free(&res);
+    }
+    free(views);
+    tbox_cat_free_messages(rows, count);
+    return ok ? TBOX_DB_OK : TBOX_DB_E_IO;
+}
+
 TBoxDbStatus tbox_cat_replace_objects(TBoxDb *db,
                                       const TBoxResolveResult *res) {
     sqlite3 *h = tbox_db_handle(db);

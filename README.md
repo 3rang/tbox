@@ -187,16 +187,41 @@ event. All Telegram IDs are sent as **strings** (they can exceed 2^53).
 {"event": "auth.closed", "data": {}}
 {"event": "conn.state", "data": {"state": "..."}}
 {"event": "engine.error", "data": {"code": 400, "message": "API_ID_INVALID"}}
+{"event": "cooldown", "data": {"seconds": 42, "reason": "Telegram asked to slow down"}}
+{"event": "sync.progress", "data": {"op_id": "…", "messages_scanned": 120}}
+{"event": "sync.done", "data": {"op_id": "…", "objects": 12, "inbox_items": 3}}
+{"event": "catalog.changed", "data": {"folder_ids": ["*"]}}
 ```
 
 The commands that exist today are `hello`, `auth.start`, `auth.password`,
-`auth.logout`, `engine.status` and `engine.shutdown`; later stages add
-`sync.*`, `catalog.*`, `file.*`, `folder.*`, `trash.*` and `search.*`
-(spec §6.4). `serve` exits `0` on a clean shutdown, `2` when the profile is
-already in use, `3` for bad arguments and `4` for a database error.
+`auth.logout`, `engine.status`, `engine.shutdown`, `sync.rescan`,
+`catalog.list`, `catalog.stat` and `catalog.summary`; later stages add
+`file.*`, `folder.*`, `trash.*` and `search.*` (spec §6.4). `serve` exits
+`0` on a clean shutdown, `2` when the profile is already in use, `3` for bad
+arguments and `4` for a database error.
 
 The engine is a child process, so a crash inside TDLib cannot take the front
 down with it, and the whole conversation can be logged and replayed.
+
+### The catalog
+
+Your files are Telegram messages. A **managed** file or folder carries a
+`tbx1` record in its caption (or, for a folder, in its text):
+
+```text
+tbx1 {"v":1,"k":"f","o":"…32 hex…","p":"root","n":"report.pdf","r":2,"s":12345}
+```
+
+The record names the object (`o`), its parent folder (`p`), the name (`n`)
+and the revision (`r`). A file without a valid record is an **unmanaged
+file** and lands in the **Inbox**; a text message without one is a note.
+
+The engine reads Saved Messages at startup, writes every message it sees
+into `index.db` and derives the folder tree from those rows — always through
+the same resolver, so a full scan and a live update can never disagree. After
+that it applies the updates Telegram sends as you work, and `sync.rescan`
+re-reads the whole history on demand. Nothing is ever deleted from Telegram
+as part of reading it.
 
 ## Security notes
 

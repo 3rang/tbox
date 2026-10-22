@@ -54,6 +54,17 @@ struct TBoxSession {
     char link[1024];       /* last QR link shown, to detect rotation */
     char conn[64];         /* last updateConnectionState seen */
 
+    long long my_id;       /* account user id from the getMe reply */
+    int is_premium;        /* account is premium (auth.ready, spec 6.5) */
+    long long saved_chat;  /* Saved Messages chat id; 0 until createPrivateChat */
+
+    /* One in-flight synchronous call (tbox_session_call, caller thread only).
+     * Replies are drained by tbox_session_take_event as well, so the capture
+     * happens there, keyed by the private @extra. */
+    int call_seq;
+    char call_extra[32];
+    char *call_reply;
+
     /* Event queue: receive thread writes, caller thread reads. Payloads
      * are owned heap strings (P5: no fixed buffer); the queue starts
      * small and grows, so a steady trickle never pays for the cap. */
@@ -266,6 +277,32 @@ static void session_send_params(TBoxSession *s) {
 
 /* ---- tdlib callbacks ------------------------------------------------ */
 
+/* The chat a catalog update belongs to: the top-level chat_id, or the
+ * message's chat_id for updateNewMessage / updateMessageSendSucceeded. 0
+ * when the update names no chat. */
+static long long update_chat_id(const cJSON *update) {
+    const cJSON *chat = cJSON_GetObjectItemCaseSensitive(update, "chat_id");
+    if (cJSON_IsNumber(chat)) {
+        return (long long)chat->valuedouble;
+    }
+    const cJSON *msg = cJSON_GetObjectItemCaseSensitive(update, "message");
+    const cJSON *mc = cJSON_GetObjectItemCaseSensitive(msg, "chat_id");
+    if (cJSON_IsNumber(mc)) {
+        return (long long)mc->valuedouble;
+    }
+    return 0;
+}
+
+/* The updates src/sync/updates.c acts on (spec 8.3). Everything else stays
+ * out of the session queue, so a busy account cannot crowd it. */
+static int is_catalog_update(const char *t) {
+    return strcmp(t, "updateNewMessage") == 0 ||
+           strcmp(t, "updateMessageContent") == 0 ||
+           strcmp(t, "updateMessageEdited") == 0 ||
+           strcmp(t, "updateDeleteMessages") == 0 ||
+           strcmp(t, "updateMessageSendSucceeded") == 0;
+}
+
 static void session_update(void *user_data, const cJSON *update) {
     TBoxSession *s = user_data;
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(update, "@type");
@@ -280,6 +317,20 @@ static void session_update(void *user_data, const cJSON *update) {
         if (strcmp(name, s->conn) != 0) {
             snprintf(s->conn, sizeof s->conn, "%s", name);
             push_event(s, TBOX_SESSION_EV_CONNECTION, 0, name);
+        }
+        return;
+    }
+
+    if (is_catalog_update(t)) {
+        /* spec 8.3: the Saved Messages chat only. Before createPrivateChat
+         * answers there is no id to compare against; the startup scan fills
+         * that gap. */
+        if (s->saved_chat != 0 && update_chat_id(update) == s->saved_chat) {
+            char *raw = cJSON_PrintUnformatted(update);
+            if (raw != NULL) {
+                push_event(s, TBOX_SESSION_EV_UPDATE, 0, raw);
+                cJSON_free(raw);
+            }
         }
         return;
     }
@@ -362,36 +413,54 @@ static void session_update(void *user_data, const cJSON *update) {
 }
 
 /* Replies (events carrying @extra) become events too: errors verbatim, and
- * the getMe answer as the account name. "ok" needs no translation. */
+ * the getMe answer as the account name and id. A reply to a synchronous
+ * tbox_session_call is captured for that caller instead. */
 static void session_drain_replies(TBoxSession *s) {
     char *raw = NULL;
     while ((raw = tbox_td_client_take_reply(s->client)) != NULL) {
         cJSON *root = cJSON_Parse(raw);
         if (root != NULL) {
-            const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "@type");
-            const char *t = cJSON_IsString(type) ? cJSON_GetStringValue(type) : "";
-            if (strcmp(t, "error") == 0) {
-                const cJSON *msg = cJSON_GetObjectItemCaseSensitive(root, "message");
-                const cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
-                push_event(s, TBOX_SESSION_EV_ERROR,
-                           cJSON_IsNumber(code) ? (int)code->valuedouble : 0,
-                           cJSON_IsString(msg) ? cJSON_GetStringValue(msg) : "");
-            } else if (strcmp(t, "user") == 0) {
-                const cJSON *extra = cJSON_GetObjectItemCaseSensitive(root, "@extra");
-                if (cJSON_IsString(extra) &&
-                    strcmp(cJSON_GetStringValue(extra), "me") == 0) {
-                    const char *first = cJSON_GetStringValue(
-                        cJSON_GetObjectItemCaseSensitive(root, "first_name"));
-                    const char *last = cJSON_GetStringValue(
-                        cJSON_GetObjectItemCaseSensitive(root, "last_name"));
-                    char name[256];
-                    snprintf(name, sizeof name, "%s %s", first ? first : "",
-                             last ? last : "");
-                    size_t n = strlen(name);
-                    while (n > 0 && name[n - 1] == ' ') {
-                        name[--n] = '\0';
+            const cJSON *extra = cJSON_GetObjectItemCaseSensitive(root, "@extra");
+            const char *ex = cJSON_IsString(extra) ? cJSON_GetStringValue(extra) : "";
+            if (s->call_extra[0] != '\0' && strcmp(ex, s->call_extra) == 0) {
+                /* a synchronous call owns this reply; hand it over intact */
+                if (s->call_reply == NULL) {
+                    s->call_reply = raw;
+                    raw = NULL;
+                }
+            } else {
+                const cJSON *type = cJSON_GetObjectItemCaseSensitive(root, "@type");
+                const char *t = cJSON_IsString(type) ? cJSON_GetStringValue(type) : "";
+                if (strcmp(t, "error") == 0) {
+                    const cJSON *msg = cJSON_GetObjectItemCaseSensitive(root, "message");
+                    const cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
+                    push_event(s, TBOX_SESSION_EV_ERROR,
+                               cJSON_IsNumber(code) ? (int)code->valuedouble : 0,
+                               cJSON_IsString(msg) ? cJSON_GetStringValue(msg) : "");
+                } else if (strcmp(t, "user") == 0) {
+                    if (strcmp(ex, "me") == 0) {
+                        const char *first = cJSON_GetStringValue(
+                            cJSON_GetObjectItemCaseSensitive(root, "first_name"));
+                        const char *last = cJSON_GetStringValue(
+                            cJSON_GetObjectItemCaseSensitive(root, "last_name"));
+                        const cJSON *id = cJSON_GetObjectItemCaseSensitive(root, "id");
+                        const cJSON *premium =
+                            cJSON_GetObjectItemCaseSensitive(root, "is_premium");
+                        if (cJSON_IsNumber(id)) {
+                            s->my_id = (long long)id->valuedouble;
+                        }
+                        if (cJSON_IsTrue(premium)) {
+                            s->is_premium = 1;
+                        }
+                        char name[256];
+                        snprintf(name, sizeof name, "%s %s", first ? first : "",
+                                 last ? last : "");
+                        size_t n = strlen(name);
+                        while (n > 0 && name[n - 1] == ' ') {
+                            name[--n] = '\0';
+                        }
+                        push_event(s, TBOX_SESSION_EV_READY, 0, name);
                     }
-                    push_event(s, TBOX_SESSION_EV_READY, 0, name);
                 }
             }
             cJSON_Delete(root);
@@ -521,6 +590,58 @@ int tbox_session_progress_dropped(TBoxSession *s) {
     return v;
 }
 
+long long tbox_session_my_id(const TBoxSession *s) {
+    return (s != NULL) ? s->my_id : 0;
+}
+
+int tbox_session_is_premium(const TBoxSession *s) {
+    return (s != NULL) ? s->is_premium : 0;
+}
+
+void tbox_session_set_saved_chat(TBoxSession *s, long long chat_id) {
+    if (s != NULL) {
+        s->saved_chat = chat_id;
+    }
+}
+
+char *tbox_session_call(TBoxSession *s, const char *request_json,
+                        unsigned timeout_ms) {
+    if (s == NULL || request_json == NULL) {
+        return NULL;
+    }
+    cJSON *req = cJSON_Parse(request_json);
+    if (req == NULL || !cJSON_IsObject(req)) {
+        cJSON_Delete(req);
+        return NULL;
+    }
+    /* A private @extra so this reply cannot be confused with the auth flow's
+     * ("init", "me", "qr", ...). */
+    s->call_seq++;
+    snprintf(s->call_extra, sizeof s->call_extra, "call:%d", s->call_seq);
+    cJSON_DeleteItemFromObjectCaseSensitive(req, "@extra");
+    cJSON_AddStringToObject(req, "@extra", s->call_extra);
+    free(s->call_reply);
+    s->call_reply = NULL;
+    session_send(s, req); /* takes ownership */
+
+    unsigned waited = 0;
+    for (;;) {
+        session_drain_replies(s);
+        if (s->call_reply != NULL) {
+            char *reply = s->call_reply;
+            s->call_reply = NULL;
+            s->call_extra[0] = '\0';
+            return reply;
+        }
+        if (waited >= timeout_ms) {
+            s->call_extra[0] = '\0';
+            return NULL;
+        }
+        TBOX_SLEEP_MS(TBOX_POLL_MS);
+        waited += TBOX_POLL_MS;
+    }
+}
+
 void tbox_session_submit_password(TBoxSession *s, const char *password) {
     if (s == NULL || password == NULL) {
         return;
@@ -583,6 +704,7 @@ void tbox_session_close(TBoxSession *s) {
         free(s->ev[(s->ehead + i) % s->ev_cap].data);
     }
     free(s->ev);
+    free(s->call_reply);
 #ifdef _WIN32
     DeleteCriticalSection(&s->lock);
 #else

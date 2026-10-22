@@ -99,61 +99,11 @@ static void emit_changed(TBoxUpdates *u) {
 
 /* ---- rebuild objects ------------------------------------------------- */
 
-/* Fills a resolve view from a loaded message row. The view borrows the row's
- * stable buffers, so the rows array must outlive it. */
-static void view_from_row(const TBoxMessageRow *r, TBoxResolveMsg *v) {
-    memset(v, 0, sizeof *v);
-    v->message_id = r->message_id;
-    v->date = r->date;
-    v->orig_name = r->orig_name[0] != '\0' ? r->orig_name : NULL;
-    v->mime = r->mime[0] != '\0' ? r->mime : NULL;
-    v->has_size = r->has_size;
-    v->size = r->size;
-    v->bad_record = r->bad_record;
-    if (strcmp(r->kind, TBOX_MSG_KIND_FILE) == 0) {
-        v->kind = TBOX_MSG_FILE;
-        v->rec = r->rec;
-    } else if (strcmp(r->kind, TBOX_MSG_KIND_FOLDER) == 0) {
-        v->kind = TBOX_MSG_FOLDER;
-        v->rec = r->rec;
-    } else if (strcmp(r->kind, TBOX_MSG_KIND_UNMANAGED) == 0) {
-        v->kind = TBOX_MSG_UNMANAGED;
-    } else {
-        v->kind = TBOX_MSG_NOTE;
-    }
-}
-
 int tbox_updates_reresolve(TBoxUpdates *u, int emit_changed_flag) {
     if (u == NULL) {
         return -1;
     }
-    TBoxMessageRow *rows = NULL;
-    size_t count = 0;
-    if (tbox_cat_load_messages(u->db, &rows, &count) != TBOX_DB_OK) {
-        return -1;
-    }
-    TBoxResolveMsg *views = NULL;
-    if (count > 0) {
-        views = calloc(count, sizeof *views);
-        if (views == NULL) {
-            tbox_cat_free_messages(rows, count);
-            return -1;
-        }
-        for (size_t i = 0; i < count; i++) {
-            view_from_row(&rows[i], &views[i]);
-        }
-    }
-
-    TBoxResolveResult res;
-    memset(&res, 0, sizeof res);
-    int ok = 0;
-    if (tbox_resolve(views, count, &res) == 0) {
-        ok = tbox_cat_replace_objects(u->db, &res) == TBOX_DB_OK;
-        tbox_resolve_result_free(&res);
-    }
-    free(views);
-    tbox_cat_free_messages(rows, count);
-    if (!ok) {
+    if (tbox_cat_rebuild_objects(u->db, NULL, NULL) != TBOX_DB_OK) {
         return -1;
     }
     if (emit_changed_flag) {

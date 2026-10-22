@@ -278,6 +278,14 @@ static int write_page(Scan *s, const cJSON *messages, long long *smallest) {
         (void)tbox_cat_rollback(s->db);
         return -1;
     }
+    if (!have_low) {
+        /* The page held messages, but not one we could read. Paging on from
+         * here would ask for the same page forever, and stopping quietly
+         * would look like the end of history - which may delete rows. So the
+         * scan fails here and the catalog keeps everything it had. */
+        (void)tbox_cat_rollback(s->db);
+        return -1;
+    }
     if (tbox_cat_commit(s->db) != TBOX_DB_OK) {
         return -1;
     }
@@ -385,5 +393,172 @@ int tbox_scan_full(TBoxDb *db, const TBoxScanHistory *history,
     }
     msgs_free(&s.msgs);
     seen_free(&s.seen);
+    return 0;
+}
+
+/* ---- the reconnect reconcile (spec 8.3) ------------------------------- */
+
+/* The message ids already in the catalog, sorted so the "have we seen this
+ * one" test is a binary search instead of a scan of the whole table. */
+typedef struct IdSet {
+    char **ids;
+    size_t count;
+} IdSet;
+
+static int cmp_id(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+static int idset_has(const IdSet *s, const char *id) {
+    size_t lo = 0;
+    size_t hi = s->count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int cmp = strcmp(s->ids[mid], id);
+        if (cmp == 0) {
+            return 1;
+        }
+        if (cmp < 0) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return 0;
+}
+
+/* Writes one history page (one transaction) and reports whether it held an id
+ * the catalog already had. Returns 1 for "yes", 0 for "no", -1 on failure. */
+static int reconcile_page(Scan *s, const cJSON *messages, long long *smallest,
+                          const IdSet *known) {
+    int n = cJSON_GetArraySize(messages);
+    if (n == 0) {
+        return 0;
+    }
+    if (tbox_cat_begin(s->db) != TBOX_DB_OK) {
+        return -1;
+    }
+    int fail = 0;
+    int saw_known = 0;
+    long long low = 0;
+    int have_low = 0;
+    for (int i = 0; i < n; i++) {
+        const cJSON *m = cJSON_GetArrayItem(messages, i);
+        TBoxMessageRow row;
+        int parsed = tbox_message_parse(m, &row);
+        if (parsed < 0) {
+            continue;
+        }
+        long long id = strtoll(row.message_id, NULL, 10);
+        if (!have_low || id < low) {
+            low = id;
+            have_low = 1;
+        }
+        if (idset_has(known, row.message_id)) {
+            saw_known = 1;
+        }
+        if (parsed == 0) {
+            tbox_message_row_free(&row);
+            continue; /* not catalog data */
+        }
+        if (tbox_cat_upsert_message(s->db, &row) != TBOX_DB_OK) {
+            tbox_message_row_free(&row);
+            fail = 1;
+            break;
+        }
+        tbox_message_row_free(&row);
+    }
+    if (fail) {
+        (void)tbox_cat_rollback(s->db);
+        return -1;
+    }
+    if (!have_low) {
+        /* No message on the page could be read, so there is no id to page
+         * from. Asking for the same page again would never end. */
+        (void)tbox_cat_rollback(s->db);
+        return -1;
+    }
+    if (tbox_cat_commit(s->db) != TBOX_DB_OK) {
+        return -1;
+    }
+    *smallest = low;
+    return saw_known;
+}
+
+int tbox_sync_reconcile(TBoxDb *db, const TBoxScanHistory *history,
+                        TBoxScanEmitFn emit, void *emit_ctx,
+                        long long *messages_read) {
+    if (db == NULL || history == NULL || history->fetch == NULL) {
+        return -1;
+    }
+    Scan s;
+    memset(&s, 0, sizeof s);
+    s.db = db;
+    s.emit = emit;
+    s.emit_ctx = emit_ctx;
+
+    IdSet known;
+    memset(&known, 0, sizeof known);
+    if (tbox_cat_list_message_ids(db, &known.ids, &known.count) ==
+        TBOX_DB_OK) {
+        qsort(known.ids, known.count, sizeof *known.ids, cmp_id);
+    }
+
+    long long from = 0;
+    long long read = 0;
+    int pages = 0;
+    int failed = 0;
+    for (;;) {
+        char *page = history->fetch(history->ctx, from, SCAN_PAGE_LIMIT);
+        if (page == NULL) {
+            failed = 1;
+            break;
+        }
+        cJSON *root = cJSON_Parse(page);
+        free(page);
+        if (root == NULL) {
+            failed = 1;
+            break;
+        }
+        const cJSON *messages =
+            cJSON_GetObjectItemCaseSensitive(root, "messages");
+        int n = cJSON_GetArraySize(messages);
+        read += n;
+        pages++;
+        if (n == 0) {
+            cJSON_Delete(root);
+            break; /* end of history */
+        }
+        long long smallest = 0;
+        int rc = reconcile_page(&s, messages, &smallest, &known);
+        cJSON_Delete(root);
+        if (rc < 0) {
+            failed = 1;
+            break;
+        }
+        /* spec 8.3: stop at a message the catalog already has, but only
+         * after at least two pages - one page of overlap is not enough to be
+         * sure the paging lines up. */
+        if (rc == 1 && pages >= 2) {
+            break;
+        }
+        from = smallest;
+    }
+    tbox_cat_free_ids(known.ids, known.count);
+
+    if (failed) {
+        /* Whatever was written is true data and stays; the catalog is simply
+         * not rebuilt, so it is still consistent with the rows it had. */
+        return -1;
+    }
+    if (tbox_cat_rebuild_objects(db, NULL, NULL) != TBOX_DB_OK) {
+        return -1;
+    }
+    if (pages > 0) {
+        emit_changed(&s);
+    }
+    if (messages_read != NULL) {
+        *messages_read = read;
+    }
     return 0;
 }
