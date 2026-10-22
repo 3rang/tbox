@@ -4,7 +4,7 @@
 
 The whole user-facing journey lives here and nowhere else:
 
-    keys -> connect -> scan -> two-step password -> done
+    keys -> connect -> scan -> two-step password -> files
 
 Every decision comes from an event (see :mod:`tbox.core`), so the window
 never has to guess what the engine is doing. Screens are plain widgets held
@@ -13,6 +13,8 @@ them, which is also what makes it easy to test without an account.
 """
 
 from __future__ import annotations
+
+from collections.abc import Callable
 
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QGuiApplication
@@ -33,9 +35,17 @@ from PySide6.QtWidgets import (
 from .. import config, paths
 from ..errors import TboxError
 from . import qrview
+from .files import FilesPage
 from .worker import EngineWorker
 
 MY_TELEGRAM_APPS = "https://my.telegram.org/apps"
+
+#: A catalog question may wait for a scan that reads the whole history, so
+#: the answer can take minutes.
+CATALOG_TIMEOUT = 900.0
+
+#: Qt's "as wide as it likes" - a widget whose maximum is smaller is fixed.
+_GROWS = 1 << 24
 
 
 def _label(text: str = "", name: str = "") -> QLabel:
@@ -72,7 +82,12 @@ def _card(*children: QWidget, spacing: int = 14) -> QFrame:
     layout.setContentsMargins(28, 28, 28, 28)
     layout.setSpacing(spacing)
     for child in children:
-        layout.addWidget(child)
+        if child.maximumWidth() < _GROWS:
+            # a fixed-size thing (the QR code) sits in the middle; everything
+            # else may grow and fills the card
+            layout.addWidget(child, 0, Qt.AlignmentFlag.AlignHCenter)
+        else:
+            layout.addWidget(child)
     return card
 
 
@@ -81,7 +96,7 @@ def _page(*children: QWidget) -> QWidget:
     layout = QVBoxLayout(page)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.addStretch(1)
-    layout.addWidget(_card(*children))
+    layout.addWidget(_card(*children), 0, Qt.AlignmentFlag.AlignHCenter)
     layout.addStretch(1)
     return page
 
@@ -96,9 +111,11 @@ class MainWindow(QMainWindow):
     def __init__(self, autostart: bool = True) -> None:
         super().__init__()
         self.setWindowTitle("tbox")
-        self.resize(580, 720)
+        self.resize(900, 640)
         self._worker: EngineWorker | None = None
         self.current_page = ""
+        #: What to do with each answer the worker brings back.
+        self._pending: dict[int, Callable[[dict], None]] = {}
         self._build()
         self._centre()
         if autostart:
@@ -216,6 +233,14 @@ class MainWindow(QMainWindow):
             quit_app,
         )
 
+        # files: the catalog, read-only
+        self.files_page = FilesPage()
+        self.files_page.folder_chosen.connect(self._load_folder)
+        self.files_page.rescan_requested.connect(self._rescan)
+        self.files_page.signout_requested.connect(self._logout)
+        self.files_page.remove_data_requested.connect(self._remove_local_data)
+        self.pages["files"] = self.files_page
+
         self.stack = QStackedWidget()
         for page in self.pages.values():
             self.stack.addWidget(page)
@@ -271,9 +296,14 @@ class MainWindow(QMainWindow):
         self._worker = EngineWorker(
             str(paths.session_dir()), api_id, api_hash, config.db_key(), self
         )
-        self._worker.event.connect(self.handle_event)
-        self._worker.failed.connect(self.on_failed)
+        self._attach_worker(self._worker)
         self._worker.start()
+
+    def _attach_worker(self, worker: EngineWorker) -> None:
+        """Connects an engine worker to this window."""
+        worker.event.connect(self.handle_event)
+        worker.failed.connect(self.on_failed)
+        worker.answered.connect(self._on_answered)
 
     def handle_event(self, event: dict) -> None:
         """One engine event in, at most one screen change out."""
@@ -322,8 +352,27 @@ class MainWindow(QMainWindow):
             who = str(data.get("display_name", "")).strip()
             self.done_title.setText(f"Linked as {who}" if who else "Linked")
             self.done_note.setText("")
-            self.show_page("done")
+            self.files_page.set_account(who)
+            self.show_page("files")
             self.status("Signed in.")
+            self.files_page.select("root")
+
+        elif name == "sync.progress":
+            scanned = int(data.get("messages_scanned", 0) or 0)
+            self.status(f"Reading Saved Messages... {scanned} messages")
+
+        elif name == "sync.done":
+            objects = int(data.get("objects", 0) or 0)
+            inbox = int(data.get("inbox_items", 0) or 0)
+            self.status(f"{objects} objects, {inbox} in the Inbox.")
+            self._load_folder(self.files_page.current_folder() or "root")
+
+        elif name == "catalog.changed":
+            self._load_folder(self.files_page.current_folder() or "root")
+
+        elif name == "cooldown":
+            seconds = int(data.get("seconds", 0) or 0)
+            self.status(f"Telegram asked us to slow down for {seconds} seconds.")
 
         elif name == "auth.closed":
             self.done_badge.setText("✓")
@@ -373,6 +422,44 @@ class MainWindow(QMainWindow):
         self.error_text.setText(message)
         self.show_page("error")
         self.status("")
+
+    # ---- the catalog -----------------------------------------------------
+
+    def _load_folder(self, folder: str) -> None:
+        """Asks the engine what is in a folder (never on this thread)."""
+        if self._worker is None:
+            return
+        rid = self._worker.call(
+            "catalog.list", {"folder_id": folder}, timeout=CATALOG_TIMEOUT
+        )
+
+        def apply(result: dict) -> None:
+            items = result.get("items")
+            self.files_page.show_folder(
+                folder, items if isinstance(items, list) else []
+            )
+
+        self._pending[rid] = apply
+
+    def _rescan(self) -> None:
+        """Asks the engine to read Saved Messages again."""
+        if self._worker is None:
+            return
+        rid = self._worker.call("sync.rescan", timeout=CATALOG_TIMEOUT)
+        self._pending[rid] = lambda result: self.status("Reading again...")
+        self.status("Reading Saved Messages again...")
+
+    def _on_answered(self, rid: int, result: object, error: object) -> None:
+        """One answer from the engine, delivered on this thread."""
+        apply = self._pending.pop(rid, None)
+        if apply is None:
+            return
+        if error:
+            self.files_page.show_message(str(error))
+            self.status(f"error: {error}")
+            return
+        if isinstance(result, dict):
+            apply(result)
 
     # ---- actions --------------------------------------------------------
 
@@ -428,6 +515,7 @@ class MainWindow(QMainWindow):
         self.done_note.setText(
             "Local data removed. Run tbox login or start the app again to link this computer."
         )
+        self.show_page("done")
         self.status(f"Removed: {', '.join(removed) if removed else 'nothing'}")
 
     def _prefill_if_known(self) -> None:

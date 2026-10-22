@@ -10,10 +10,13 @@ one event in, at most one line out.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import datetime
 import getpass
 import json
 import sys
 import threading
+import time
 
 from . import config, paths, qr
 from .engine_client import EngineClient, EngineError
@@ -29,9 +32,102 @@ _QUIET_STATES = {
     "CLOSED",
 }
 
+#: The four places the catalog has, and how they are called on screen.
+_FOLDER_TITLES = {
+    "root": "Root",
+    "inbox": "Inbox",
+    "trash": "Trash",
+    "lost": "Lost & Found",
+}
+
+#: How long the CLI waits for the engine to sign in.
+AUTH_TIMEOUT = 120.0
+
+#: How long a rescan may run before the CLI stops waiting for it.
+RESCAN_TIMEOUT = 3600.0
+
 
 def say(message: str = "") -> None:
     print(message, flush=True)
+
+
+class _Session:
+    """What the CLI watches while the engine works.
+
+    The events arrive on the engine client's reader thread, so whatever they
+    carry is kept under a lock. The engine may still be reading the whole
+    history when the account becomes ready, and that is progress worth
+    showing, so the scan events are watched all the time.
+    """
+
+    def __init__(self) -> None:
+        self.ready = threading.Event()
+        self.needs_login = False
+        self.error: str | None = None
+        self._done: list[dict] = []
+        self._lock = threading.Lock()
+
+    def handle(self, event: dict) -> None:
+        name = event.get("event")
+        data = event.get("data") or {}
+        if name == "auth.ready":
+            self.ready.set()
+        elif name == "auth.qr":
+            self.needs_login = True
+            self.ready.set()
+        elif name == "auth.closed":
+            self.error = "the session was closed"
+            self.ready.set()
+        elif name == "auth.state":
+            if str(data.get("state", "")) == "CLOSED":
+                self.error = "the session was closed"
+                self.ready.set()
+        elif name == "engine.error":
+            self.error = str(data.get("message", "unknown error"))
+        elif name == "cooldown":
+            say(f"  Telegram asked us to slow down for {data.get('seconds', 0)}s")
+        elif name == "sync.progress":
+            say(f"  scanning... {data.get('messages_scanned', 0)} messages")
+        elif name == "sync.done":
+            with self._lock:
+                self._done.append(data)
+
+    def done_for(self, op_id: str) -> dict | None:
+        """The sync.done of one operation, if it has arrived."""
+        with self._lock:
+            for data in self._done:
+                if str(data.get("op_id", "")) == op_id:
+                    return data
+        return None
+
+
+@contextlib.contextmanager
+def signed_in_engine(session: _Session):
+    """Starts the engine, waits until the account is ready, yields the client.
+
+    The session on disk is reused, so a machine that has signed in before
+    signs in again without a QR code. A machine that has not is told to run
+    ``tbox login`` rather than shown a code nobody asked for.
+    """
+    try:
+        api_id = config.api_id()
+        api_hash = config.api_hash()
+    except TboxError as exc:
+        raise TboxError(f"{exc} - run 'tbox setup' first") from exc
+
+    client = EngineClient(str(paths.session_dir()), on_event=session.handle)
+    client.start()
+    try:
+        client.auth_start(api_id, api_hash, config.db_key())
+        if not session.ready.wait(AUTH_TIMEOUT):
+            raise TboxError("the engine did not sign in in time")
+        if session.needs_login:
+            raise TboxError("this computer is not signed in - run 'tbox login'")
+        if session.error is not None:
+            raise TboxError(session.error)
+        yield client
+    finally:
+        client.close()
 
 
 def login_screen(
@@ -171,6 +267,80 @@ def cmd_logout(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_size(value: object) -> str:
+    """A size in bytes, in words, or a dash when it is not known."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        return "-"
+    size = float(value)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return "-"
+
+
+def _format_time(value: object) -> str:
+    """A unix timestamp as a local date and time, or a dash."""
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
+        return "-"
+    stamp = datetime.datetime.fromtimestamp(float(value))
+    return stamp.strftime("%Y-%m-%d %H:%M")
+
+
+def _print_items(folder: str, items: list[dict]) -> None:
+    """Print one folder's items the way a person reads a list."""
+    title = _FOLDER_TITLES.get(folder, folder)
+    if not items:
+        say(f"{title}: nothing here")
+        return
+    names: list[str] = []
+    for item in items:
+        name = str(item.get("name") or item.get("orig_name") or "?")
+        if item.get("kind") == "d":
+            name += "/"
+        names.append(name)
+    width = max(len(name) for name in names)
+    say(f"{title}:")
+    for name, item in zip(names, items):
+        if item.get("kind") == "d":
+            size = "-"
+        else:
+            size = _format_size(item.get("size"))
+        when = _format_time(item.get("mtime") or item.get("date"))
+        say(f"  {name.ljust(width)}  {size:>9}  {when}")
+
+
+def cmd_ls(args: argparse.Namespace) -> int:
+    """List what is in a folder of the catalog."""
+    folder = str(args.folder or "root")
+    session = _Session()
+    with signed_in_engine(session) as client:
+        items = client.catalog_list(folder)
+        _print_items(folder, items)
+    return 0
+
+
+def cmd_rescan(args: argparse.Namespace) -> int:
+    """Read Saved Messages again, from the oldest message to the newest."""
+    session = _Session()
+    with signed_in_engine(session) as client:
+        op_id = client.sync_rescan()
+        deadline = time.monotonic() + RESCAN_TIMEOUT
+        while time.monotonic() < deadline:
+            data = session.done_for(op_id)
+            if data is not None:
+                objects = int(data.get("objects", 0) or 0)
+                inbox = int(data.get("inbox_items", 0) or 0)
+                say(f"done: {objects} objects, {inbox} in the Inbox")
+                return 0
+            if session.error:
+                say(f"error: {session.error}")
+                return 1
+            time.sleep(0.2)
+    say("the rescan did not finish in time")
+    return 1
+
+
 def ask(label: str, current: str, secret: bool = False, validate=None) -> str:
     """Ask for one value, re-asking until it validates.
 
@@ -254,6 +424,20 @@ def build_parser() -> argparse.ArgumentParser:
         "logout", help="log out on Telegram (local data is kept)"
     )
     logout.set_defaults(func=cmd_logout)
+
+    ls = commands.add_parser("ls", help="list what is in a folder")
+    ls.add_argument(
+        "folder",
+        nargs="?",
+        default="root",
+        help="root (the default), inbox, trash, lost or a folder id",
+    )
+    ls.set_defaults(func=cmd_ls)
+
+    rescan = commands.add_parser(
+        "rescan", help="read Saved Messages again, from scratch"
+    )
+    rescan.set_defaults(func=cmd_rescan)
 
     return parser
 

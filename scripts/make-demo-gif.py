@@ -50,15 +50,27 @@ class FakeWorker(QObject):
 
     event = Signal(dict)
     failed = Signal(str)
+    answered = Signal(int, object, object)
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__()
+        self.last_rid = 0
 
     def start(self) -> None:
         pass
 
     def send(self, line: str) -> None:
         pass
+
+    def submit_password(self, password: str) -> None:
+        pass
+
+    def logout(self) -> None:
+        pass
+
+    def call(self, cmd: str, args: dict | None = None, timeout: float = 120.0) -> int:
+        self.last_rid += 1
+        return self.last_rid
 
     def stop(self, timeout_ms: int = 0) -> None:
         pass
@@ -71,7 +83,7 @@ def main() -> int:
     app = QApplication(sys.argv[:1])
     theme.apply(app)
     win = MainWindow(autostart=False)
-    win.resize(560, 680)
+    win.resize(900, 640)
     win.show()
 
     shots: list[tuple[Image.Image, int]] = []
@@ -104,15 +116,17 @@ def main() -> int:
 
     # 3. the QR, drawn from the same link format the engine sends, then a
     #    second one to show the code refreshing by itself
-    win.handle_event({"event": "qr_link", "link": "tg://login?token=DEMOFIRSTTOKEN"})
+    win.handle_event({"event": "auth.qr", "data": {"link": "tg://login?token=DEMOFIRSTTOKEN"}})
     win.status("Waiting for you to scan the code...")
     snap(1900)
-    win.handle_event({"event": "qr_link", "link": "tg://login?token=DEMONEWTOKEN42"})
+    win.handle_event({"event": "auth.qr", "data": {"link": "tg://login?token=DEMONEWTOKEN42"}})
     win.status("Waiting for you to scan the newest code...")
     snap(1900)
 
     # 4. two-step verification: the hint, then the password typed hidden
-    win.handle_event({"event": "password_needed", "hint": "your first pet's name"})
+    win.handle_event(
+        {"event": "auth.password_needed", "data": {"hint": "your first pet's name"}}
+    )
     snap(1100)
     for chunk in PASSWORD_CHUNKS:
         win.password_field.setText(chunk)
@@ -122,11 +136,41 @@ def main() -> int:
     win._submit_password()
     snap(900)
 
-    # 6. in
-    win.handle_event({"event": "ready", "user": "Tarang Patel"})
-    snap(1900)
-    win.handle_event({"event": "closed"})
-    snap(1600)
+    # 6. in: the files screen, with the catalog the engine read
+    win.handle_event(
+        {"event": "auth.ready", "data": {"display_name": "Tarang Patel"}}
+    )
+    win._worker.answered.emit(
+        win._worker.last_rid,
+        {
+            "items": [
+                {
+                    "object_id": "a1",
+                    "kind": "d",
+                    "name": "Documents",
+                    "size": None,
+                    "mtime": None,
+                },
+                {
+                    "object_id": "b2",
+                    "kind": "f",
+                    "name": "report.pdf",
+                    "size": 1234567,
+                    "mtime": 1760000000,
+                },
+                {
+                    "object_id": "c3",
+                    "kind": "f",
+                    "name": "photo.jpg",
+                    "size": 204800,
+                    "mtime": 1760000000,
+                },
+            ]
+        },
+        "",
+    )
+    win.files_page.tree.expandItem(win.files_page.tree.topLevelItem(0))
+    snap(2400)
 
     frames = [image for image, _ in shots]
     durations = [hold for _, hold in shots]

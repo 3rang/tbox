@@ -64,15 +64,15 @@ TDLib in one file. First run:
 3. if your account has two-step verification, it asks for that password once
    (typed hidden, sent only to Telegram)
 
-then it says **Linked as Your Name** and closes. The second run skips
-everything and goes straight in, because TDLib keeps the session.
+then it opens your files. The second run skips everything and goes straight
+in, because TDLib keeps the session.
 
-![tbox login: keys, QR, two-step, linked](docs/login-demo.gif)
+![tbox login: keys, QR, two-step, files](docs/login-demo.gif)
 
 That is the real window running its real code path, with the engine
 scripted so no account or phone is needed: the keys screen, the QR (which
 refreshes once mid-animation, as it does live), the two-step prompt, then
-the signed-in screen. Regenerate it from the source with
+the files screen with the catalog it read. Regenerate it from the source with
 `scripts/make-demo-gif.py` whenever the screens change.
 
 The QR refreshes by itself (roughly every 30 seconds); the window always
@@ -85,8 +85,8 @@ Prefer the command line? The same flow exists there:
 .venv\Scripts\tbox.exe login    # shows a QR code; scan it with your phone
 ```
 
-MVP status: `setup`, `login` and `logout` exist today. The archive commands
-(put, get, list, ...) come next, built on the same engine.
+MVP status: `setup`, `login`, `logout`, `ls` and `rescan` exist today. The
+archive commands (put, get, move, ...) come next, built on the same engine.
 
 ### Where things live
 
@@ -108,14 +108,17 @@ MVP status: `setup`, `login` and `logout` exist today. The archive commands
 |---|---|
 | `tbox setup` | ask for the Telegram app credentials and save them (api_hash to the secure store) |
 | `tbox login` | link this computer (QR; asks for credentials on the first run) |
-| `tbox login -v` | same, plus every raw event the engine sends |
+| `tbox login -v` | same, plus every raw engine event the engine sends |
 | `tbox logout` | log out on Telegram (your local data is kept) |
+| `tbox ls [folder]` | list what is in a folder: `root` (the default), `inbox`, `trash`, `lost` or a folder id |
+| `tbox rescan` | read Saved Messages again, from the oldest message to the newest |
 | `tbox --version` | print the version |
 
-The window's signed-in screen offers the same two actions as buttons: **Log
-out of Telegram** (keeps local data) and **Remove local data** (deletes this
-computer's session and settings after logging out — your Telegram account is
-never touched). The desktop app has no commands beyond the developer-only
+The window's Files screen offers the same things: a tree of folders (Root,
+Inbox, Trash, Lost & Found), the items of the chosen folder, and a **Rescan**
+button. It also offers **Sign out** (keeps local data) and **Remove local
+data** (deletes this computer's session and settings — your Telegram account
+is never touched). The desktop app has no commands beyond the developer-only
 `--selftest` (which the build script uses to check a frozen bundle).
 
 ## Troubleshooting

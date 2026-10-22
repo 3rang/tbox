@@ -40,18 +40,32 @@ class FakeWorker(QObject):
 
     event = Signal(dict)
     failed = Signal(str)
+    answered = Signal(int, object, object)
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__()
         self.sent: list[str] = []
         self.stopped = False
         self.logged_out = False
+        self.requests: list[tuple[str, dict | None]] = []
 
     def start(self) -> None:
         pass
 
     def send(self, line: str) -> None:
         self.sent.append(line)
+
+    def call(self, cmd: str, args: dict | None = None, timeout: float = 120.0) -> int:
+        """Stands in for the worker's request queue."""
+        self.requests.append((cmd, args))
+        return len(self.requests)
+
+    def answer(self, rid: int, result: dict) -> None:
+        """Brings an answer back, the way the worker does."""
+        self.answered.emit(rid, result, "")
+
+    def fail(self, rid: int, message: str) -> None:
+        self.answered.emit(rid, None, message)
 
     def submit_password(self, password: str) -> None:
         self.sent.append(password)
@@ -125,7 +139,7 @@ class WindowTest(unittest.TestCase):
         self.assertEqual(self.window.current_page, "connecting")
         self.assertIsInstance(worker, FakeWorker)
         worker.event.emit({"event": "auth.ready", "data": {"display_name": "Someone"}})
-        self.assertEqual(self.window.current_page, "done")
+        self.assertEqual(self.window.current_page, "files")
 
     # ---- the journey ----------------------------------------------------
 
@@ -181,8 +195,8 @@ class WindowTest(unittest.TestCase):
 
     def test_ready_then_closed_reports_the_account(self):
         self.window.handle_event({"event": "auth.ready", "data": {"display_name": "Tarang Patel"}})
-        self.assertEqual(self.window.current_page, "done")
-        self.assertIn("Tarang Patel", self.window.done_title.text())
+        self.assertEqual(self.window.current_page, "files")
+        self.assertIn("Tarang Patel", self.window.files_page.account.text())
 
         self.window.handle_event({"event": "auth.closed", "data": {}})
         self.assertEqual(self.window.current_page, "done")
@@ -195,6 +209,82 @@ class WindowTest(unittest.TestCase):
         self.window.handle_event({"event": "auth.closed", "data": {}})
         self.assertEqual(self.window.current_page, "done")
         self.assertIn("Tarang Patel", self.window.done_title.text())
+
+    # ---- the files screen ----------------------------------------------
+
+    def test_the_files_screen_has_the_four_places(self):
+        tree = self.window.files_page.tree
+        labels = [
+            tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())
+        ]
+        self.assertEqual(labels, ["Root", "Inbox", "Trash", "Lost & Found"])
+
+    def test_the_files_screen_asks_the_engine_and_shows_the_answer(self):
+        worker = FakeWorker()
+        self.window._attach_worker(worker)
+        self.window._worker = worker
+        self.window.handle_event({"event": "auth.ready", "data": {"display_name": "Someone"}})
+
+        self.assertEqual(worker.requests[0], ("catalog.list", {"folder_id": "root"}))
+
+        worker.answer(
+            1,
+            {
+                "items": [
+                    {
+                        "object_id": "abc",
+                        "kind": "f",
+                        "name": "report.pdf",
+                        "size": 2048,
+                        "mtime": 1760000000,
+                    },
+                    {
+                        "object_id": "def",
+                        "kind": "d",
+                        "name": "docs",
+                        "size": None,
+                        "mtime": None,
+                    },
+                ]
+            },
+        )
+
+        table = self.window.files_page.table
+        self.assertEqual(table.rowCount(), 2)
+        self.assertEqual(table.item(0, 0).text(), "report.pdf")
+        self.assertEqual(table.item(0, 1).text(), "2.0 KB")
+        self.assertEqual(table.item(1, 0).text(), "docs")
+        self.assertEqual(table.item(1, 1).text(), "-")
+
+    def test_choosing_another_folder_asks_again(self):
+        worker = FakeWorker()
+        self.window._attach_worker(worker)
+        self.window._worker = worker
+        self.window.handle_event({"event": "auth.ready", "data": {"display_name": "Someone"}})
+
+        self.window.files_page.select("inbox")
+
+        self.assertEqual(worker.requests[-1], ("catalog.list", {"folder_id": "inbox"}))
+
+    def test_the_rescan_button_asks_for_a_new_read(self):
+        worker = FakeWorker()
+        self.window._attach_worker(worker)
+        self.window._worker = worker
+        self.window.handle_event({"event": "auth.ready", "data": {"display_name": "Someone"}})
+
+        self.window.files_page.rescan_button.click()
+
+        self.assertEqual(worker.requests[-1], ("sync.rescan", None))
+
+    def test_a_failed_answer_is_shown_in_words(self):
+        worker = FakeWorker()
+        self.window._attach_worker(worker)
+        self.window._worker = worker
+        self.window.handle_event({"event": "auth.ready", "data": {"display_name": "Someone"}})
+
+        worker.fail(1, "NOT_FOUND: no such folder")
+
+        self.assertIn("NOT_FOUND", self.window.status_label.text())
 
     def test_closing_stops_the_engine(self):
         worker = FakeWorker()

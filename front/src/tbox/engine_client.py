@@ -314,3 +314,39 @@ class EngineClient:
     def status(self) -> dict[str, Any]:
         """``auth_state``, ``conn_state``, ``cooldown_until``, ``pending_ops``."""
         return self.request("engine.status")
+
+    # ---- the catalog commands ---------------------------------------
+
+    #: How long a catalog request may take. The engine answers a catalog
+    #: question only after the startup scan it may be running is done, and
+    #: that scan reads the whole history, so this is minutes, not seconds.
+    CATALOG_TIMEOUT = 900.0
+
+    def catalog_list(
+        self, folder_id: str, timeout: float = CATALOG_TIMEOUT
+    ) -> list[dict[str, Any]]:
+        """The items of one folder (spec 6.4), in the spec 7.6 shape.
+
+        ``folder_id`` is ``root``, ``inbox``, ``trash``, ``lost`` or the
+        object id of a folder.
+        """
+        result = self.request("catalog.list", {"folder_id": folder_id}, timeout=timeout)
+        items = result.get("items")
+        if not isinstance(items, list):
+            return []
+        return [item for item in items if isinstance(item, dict)]
+
+    def catalog_stat(
+        self, object_id: str, timeout: float = CATALOG_TIMEOUT
+    ) -> dict[str, Any]:
+        """One object and the revisions it has (spec 6.4)."""
+        return self.request("catalog.stat", {"object_id": object_id}, timeout=timeout)
+
+    def catalog_summary(self, timeout: float = CATALOG_TIMEOUT) -> dict[str, Any]:
+        """Counts and logical sizes per type and per top-level folder."""
+        return self.request("catalog.summary", timeout=timeout)
+
+    def sync_rescan(self, timeout: float = CATALOG_TIMEOUT) -> str:
+        """Re-reads the whole history; returns the op_id to watch (spec 6.4)."""
+        result = self.request("sync.rescan", timeout=timeout)
+        return str(result.get("op_id", ""))

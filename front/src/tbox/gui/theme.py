@@ -43,6 +43,7 @@ QWidget { background: @BG; color: @TEXT; }
     background: @CARD;
     border: 1px solid @BORDER;
     border-radius: 18px;
+    max-width: 520px;
 }
 #CardPlain { background: transparent; border: none; }
 
