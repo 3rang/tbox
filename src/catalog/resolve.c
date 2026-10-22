@@ -444,7 +444,10 @@ int tbox_resolve(const TBoxResolveMsg *msgs, size_t count,
 
         TBoxObject o;
         memset(&o, 0, sizeof o);
-        memcpy(o.object_id, g->object_id, sizeof o.object_id);
+        /* the group's id is shorter than the object's slot: copy the string,
+         * not the whole slot */
+        size_t id_len = strlen(g->object_id);
+        memcpy(o.object_id, g->object_id, id_len + 1);
         o.kind = winner->rec.kind;
         o.parent_id = intern(out, winner->rec.parent);
         o.name = intern(out, winner->rec.name);
