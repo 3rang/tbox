@@ -226,6 +226,14 @@ that it applies the updates Telegram sends as you work, and `sync.rescan`
 re-reads the whole history on demand. Nothing is ever deleted from Telegram
 as part of reading it.
 
+The engine also keeps a journal of the work it was asked to do, in the `ops`
+table of `index.db`, so an engine that stops in the middle of a job leaves a
+trail behind. When it starts again it looks at that trail before it takes on
+anything new: an operation whose message is already in Saved Messages — its
+record carries the id of the operation that sent it — is done and is not sent
+a second time; the rest go back into the queue. `engine.status` says how
+many are still open.
+
 ## Security notes
 
 These are the rules the code is held to (spec §5), all of them enforced by

@@ -21,7 +21,9 @@
 #include "engine/items.h"
 #include "engine/protocol.h"
 #include "service/tbox_session.h"
+#include "store/catalog.h"
 #include "store/db.h"
+#include "store/journal.h"
 #include "store/query.h"
 #include "sync/scan.h"
 #include "sync/updates.h"
@@ -383,6 +385,48 @@ static void engine_reconcile(TBoxEngine *e) {
     }
 }
 
+/* Answers "has this operation already gone out?" - the record of a file that
+ * was sent carries the id of the operation that sent it (spec 7.2), so the
+ * catalog knows whether the message is there. */
+static int engine_op_sent(void *ctx, const char *op_id) {
+    TBoxEngine *e = (TBoxEngine *)ctx;
+    if (e->db == NULL) {
+        return 0;
+    }
+    return tbox_cat_find_op_message(e->db, op_id, NULL);
+}
+
+/* Spec 8.4: the operations that were still open when the engine stopped are
+ * looked at when it starts again. An upload that was running or sent may
+ * already be in Saved Messages; if it is there the operation is done and is
+ * not sent a second time, and if it is not, it goes back into the queue.
+ *
+ * This runs after the catalog has been brought up to date, so the message of
+ * an operation that went out just before the crash is found. */
+static void engine_recover_ops(TBoxEngine *e) {
+    if (e->db == NULL) {
+        return;
+    }
+    TBoxOpRecoveryReport report;
+    memset(&report, 0, sizeof report);
+    if (tbox_journal_recover(e->db, engine_op_sent, e, (long long)time(NULL),
+                              &report) != TBOX_DB_OK) {
+        tbox_log_write(e->log, TBOX_LOG_WARN, "xfer", NULL,
+                       "the operations of the last run could not be looked at",
+                       NULL);
+        return;
+    }
+    if (report.checked == 0) {
+        return;
+    }
+    char detail[160];
+    snprintf(detail, sizeof detail,
+             "%d open operation(s): %d already done, %d back in the queue",
+             report.checked, report.completed, report.requeued);
+    tbox_log_write(e->log, TBOX_LOG_INFO, "xfer", NULL,
+                   "the operations of the last run were looked at", detail);
+}
+
 /* Spec 8.1 step 7: on auth.ready, open Saved Messages, read the caption
  * limit, and either scan the whole history or reconcile with it. */
 static void catalog_bootstrap(TBoxEngine *e) {
@@ -482,6 +526,10 @@ static void catalog_bootstrap(TBoxEngine *e) {
                  (unsigned long long)++e->op_counter);
         engine_run_scan(e, op_id);
     }
+
+    /* The catalog is up to date, so the operations of the last run can be
+     * looked at (spec 8.4). */
+    engine_recover_ops(e);
 }
 
 /* ---- command implementations ---------------------------------------- */
@@ -603,7 +651,11 @@ static void cmd_engine_status(TBoxEngine *e, const TBoxProtoRequest *req) {
     } else {
         cJSON_AddNullToObject(r, "cooldown_until");
     }
-    cJSON_AddNumberToObject(r, "pending_ops", 0); /* the op journal counts these */
+    int pending = 0;
+    if (e->db != NULL) {
+        (void)tbox_journal_count_active(e->db, &pending);
+    }
+    cJSON_AddNumberToObject(r, "pending_ops", (double)pending);
     respond_ok(e, req->id, r);
     cJSON_Delete(r);
 }

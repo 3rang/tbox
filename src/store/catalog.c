@@ -150,6 +150,40 @@ int tbox_cat_has_message(TBoxDb *db, const char *message_id) {
     return found;
 }
 
+int tbox_cat_find_op_message(TBoxDb *db, const char *op_id,
+                              TBoxOpMessage *out) {
+    sqlite3 *h = tbox_db_handle(db);
+    if (h == NULL || op_id == NULL || op_id[0] == '\0') {
+        return 0;
+    }
+    /* The record of a file that was sent carries the operation that sent it
+     * (the `q` key, spec 7.2), so this is how an operation that may already
+     * have gone out is recognized (spec 8.4). */
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(h,
+                           "SELECT message_id,rec_o FROM messages WHERE rec_q=?1"
+                           " ORDER BY message_id LIMIT 1",
+                           -1, &st, NULL) != SQLITE_OK) {
+        return 0;
+    }
+    sqlite3_bind_text(st, 1, op_id, -1, SQLITE_TRANSIENT);
+    int found = 0;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        if (out != NULL) {
+            memset(out, 0, sizeof *out);
+            const unsigned char *mid = sqlite3_column_text(st, 0);
+            const unsigned char *oid = sqlite3_column_text(st, 1);
+            snprintf(out->message_id, sizeof out->message_id, "%s",
+                     mid != NULL ? (const char *)mid : "");
+            snprintf(out->object_id, sizeof out->object_id, "%s",
+                     oid != NULL ? (const char *)oid : "");
+        }
+        found = 1;
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
 TBoxDbStatus tbox_cat_delete_messages(TBoxDb *db, const char *const *ids,
                                       size_t count) {
     sqlite3 *h = tbox_db_handle(db);

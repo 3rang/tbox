@@ -36,11 +36,22 @@ endif()
 # tbox_store — the index.db catalog over SQLite (spec 7.5). Its own target
 # so tests and the engine both link it, and so the SQLite amalgamation sits
 # behind one seam.
-add_library(tbox_store STATIC src/store/db.c src/store/catalog.c src/store/query.c)
+add_library(tbox_store STATIC src/store/db.c src/store/catalog.c
+                          src/store/query.c src/store/journal.c)
 target_include_directories(tbox_store PUBLIC src)
-target_link_libraries(tbox_store PUBLIC sqlite3 tbox_catalog)
+target_link_libraries(tbox_store PUBLIC sqlite3 tbox_catalog tbox_xfer)
 if(MSVC)
   target_compile_options(tbox_store PRIVATE /W4)
+endif()
+
+# tbox_xfer — the operation state machine (spec 8.4): the states, the moves
+# between them, the retry waits and what to do with an operation that was
+# still open when the engine stopped. Pure, like tbox_catalog, so it can be
+# tested on its own.
+add_library(tbox_xfer STATIC src/xfer/ops.c)
+target_include_directories(tbox_xfer PUBLIC src)
+if(MSVC)
+  target_compile_options(tbox_xfer PRIVATE /W4)
 endif()
 
 # tbox_catalog — pure catalog logic: the tbx1 record (spec 7.2) and the S8
@@ -245,6 +256,25 @@ target_link_libraries(test_store PRIVATE tbox_store tbox_util_fsx)
 add_test(NAME store_index COMMAND test_store)
 if(MSVC)
   target_compile_options(test_store PRIVATE /W4)
+endif()
+
+# The operation state machine (spec 8.4): the states, the moves between them,
+# the retry waits and the recovery of an operation that was still open.
+add_executable(test_ops tests/test_ops.c)
+target_link_libraries(test_ops PRIVATE tbox_xfer)
+add_test(NAME xfer_ops COMMAND test_ops)
+if(MSVC)
+  target_compile_options(test_ops PRIVATE /W4)
+endif()
+
+# The ops journal (spec 8.4): what it writes, what it refuses to write, and
+# the recovery of an interrupted operation - including the rule that an
+# upload whose message is already in the catalog is not sent a second time.
+add_executable(test_journal tests/test_journal.c)
+target_link_libraries(test_journal PRIVATE tbox_store tbox_util_fsx)
+add_test(NAME store_journal COMMAND test_journal)
+if(MSVC)
+  target_compile_options(test_journal PRIVATE /W4)
 endif()
 
 # The in-memory Saved Messages chat the sync tests drive. It is a test-only

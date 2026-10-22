@@ -26,7 +26,10 @@
 
 #include "engine/engine.h"
 #include "engine/protocol.h"
+#include "store/db.h"
+#include "store/journal.h"
 #include "util/fsx.h"
+#include "xfer/ops.h"
 
 #ifdef _WIN32
 #include <process.h>
@@ -46,6 +49,13 @@ static const char *DIR = "tbox_engine_catalog_test";
 static const char *O_FOLDER = "0123456789abcdef0123456789abcdef";
 static const char *O_FILE = "fedcba9876543210fedcba9876543210";
 static const char *O_CHILD = "00112233445566778899aabbccddeeff";
+static const char *O_SENT = "3333333333333333333333333333dddd";
+
+/* The two operations the last run left behind: one of them did go out (its
+ * message is in Saved Messages and carries the id of the operation), the
+ * other one did not. */
+#define OP_GONE "00000000000000a1"
+#define OP_LOST "00000000000000a2"
 
 /* ---- captured output ------------------------------------------------- */
 
@@ -205,6 +215,41 @@ static void out_free(Out *o) {
 #else
     pthread_mutex_destroy(&o->lock);
 #endif
+}
+
+/* ---- the operations the engine was asked to do ------------------------ */
+
+/* The state an operation is in, read from the journal. */
+static void op_state(TBoxDb *db, const char *op_id, char *out, size_t cap) {
+    TBoxOpRow row;
+    memset(&row, 0, sizeof row);
+    int found = 0;
+    assert(tbox_journal_get(db, op_id, &row, &found) == TBOX_DB_OK);
+    if (!found) {
+        out[0] = '\0';
+        return;
+    }
+    snprintf(out, cap, "%s", row.state);
+    tbox_journal_free_row(&row);
+}
+
+/* Waits until an operation reaches this state. The engine writes the state
+ * while it runs, so the journal is read from another connection. */
+static int wait_op_state(TBoxDb *db, const char *op_id, const char *want,
+                         unsigned ms) {
+    unsigned waited = 0;
+    char state[32];
+    for (;;) {
+        op_state(db, op_id, state, sizeof state);
+        if (strcmp(state, want) == 0) {
+            return 1;
+        }
+        if (waited >= ms) {
+            return 0;
+        }
+        T_SLEEP(10);
+        waited += 10;
+    }
 }
 
 /* ---- the fake TDLib answering the engine's requests ------------------ */
@@ -618,6 +663,67 @@ int main(void) {
     assert(r2.rc == 0);
 
     tbox_engine_free(e2);
+
+    /* ---- the operations of the last run are looked at when the engine
+     * starts again (spec 8.4) ------------------------------------------- */
+    /* Two uploads are left over: the engine was in the middle of them when
+     * it stopped. One of them did go out - its message is in Saved Messages
+     * and carries the id of the operation that sent it. The other one did
+     * not. */
+    TBoxDb *db = NULL;
+    assert(tbox_db_open(DIR, &db) == TBOX_DB_OK);
+    assert(tbox_journal_insert(db, OP_GONE, TBOX_OP_KIND_UPLOAD, "{}", 100) ==
+           TBOX_DB_OK);
+    assert(tbox_journal_set_state(db, OP_GONE, "RUNNING", NULL, 0, 101) ==
+           TBOX_DB_OK);
+    assert(tbox_journal_insert(db, OP_LOST, TBOX_OP_KIND_UPLOAD, "{}", 102) ==
+           TBOX_DB_OK);
+    assert(tbox_journal_set_state(db, OP_LOST, "RUNNING", NULL, 0, 103) ==
+           TBOX_DB_OK);
+
+    /* the message of the operation that did go out */
+    snprintf(caption, sizeof caption,
+             "tbx1 {\"v\":1,\"k\":\"f\",\"o\":\"%s\",\"p\":\"root\","
+             "\"n\":\"sent.txt\",\"r\":1,\"s\":12,\"q\":\"%s\"}",
+             O_SENT, OP_GONE);
+    fake_chat_add_media(chat, "document", "sent.txt", 12, 9006, caption);
+
+    fake_drain(fake);
+
+    int ready_before_ops = out.ready;
+    err = -1;
+    TBoxEngine *e3 = tbox_engine_new(&fake->api, &cfg, capture, &out, &err);
+    assert(e3 != NULL && err == 0);
+
+    Run r3;
+    memset(&r3, 0, sizeof r3);
+    r3.e = e3;
+    run_in_thread(&r3);
+
+    tbox_engine_push_command(e3,
+        "{\"id\":200,\"cmd\":\"auth.start\",\"args\":{\"api_id\":\"123\","
+        "\"api_hash\":\"deadbeef\"}}");
+    assert(wait_for_id(&out, 200, 3000) != NULL);
+
+    fake_td_enqueue(fake,
+        "{\"@type\":\"updateAuthorizationState\",\"authorization_state\":"
+        "{\"@type\":\"authorizationStateReady\"}}");
+    assert(wait_ready(&out, ready_before_ops + 1, 5000) == 1);
+
+    /* the operation whose message is in Saved Messages is done: it is not
+     * sent a second time */
+    assert(wait_op_state(db, OP_GONE, "DONE", 15000) == 1);
+    /* the one that never went out goes back into the queue */
+    assert(wait_op_state(db, OP_LOST, "QUEUED", 15000) == 1);
+
+    tbox_engine_push_command(e3, "{\"id\":201,\"cmd\":\"engine.shutdown\"}");
+    assert(wait_for_id(&out, 201, 5000) != NULL);
+    join_thread(&r3);
+    assert(r3.rc == 0);
+
+    tbox_engine_free(e3);
+    tbox_db_close(db);
+
     for (int i = 0; i < 4; i++) {
         free(first[i]);
     }

@@ -16,6 +16,14 @@
 #include "catalog/resolve.h"
 #include "store/db.h"
 
+/* The message an operation left behind: the record of a file that was sent
+ * carries the id of the operation that sent it (the `q` key, spec 7.2), so
+ * the message can be found by operation id. */
+typedef struct TBoxOpMessage {
+    char message_id[TBOX_MSGID_MAX_BYTES + 1];
+    char object_id[TBOX_ID_HEX_LEN + 1];
+} TBoxOpMessage;
+
 /* ---- transactions ---------------------------------------------------- */
 
 /* A scan writes page by page, each page in its own transaction (8.2), so a
@@ -31,6 +39,13 @@ TBoxDbStatus tbox_cat_upsert_message(TBoxDb *db, const TBoxMessageRow *row);
 
 /* 1 when a `messages` row with this id exists, else 0. */
 int tbox_cat_has_message(TBoxDb *db, const char *message_id);
+
+/* Finds the message that carries the record of this operation (the record's
+ * `q` is the operation id, spec 7.2). Returns 1 and fills *out when the
+ * operation has already gone out, 0 when it has not. This is what keeps an
+ * upload from being sent a second time after a crash (spec 8.4). */
+int tbox_cat_find_op_message(TBoxDb *db, const char *op_id,
+                              TBoxOpMessage *out);
 
 /* Deletes the messages with these ids (the rows a scan did not see). */
 TBoxDbStatus tbox_cat_delete_messages(TBoxDb *db, const char *const *ids,
