@@ -64,6 +64,7 @@ add_executable(tbox
   src/cmd_me.c
   src/cmd_search.c
   src/cmd_send.c
+  src/cmd_read.c
 )
 target_link_libraries(tbox PRIVATE tbox_core)
 
