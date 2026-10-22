@@ -55,6 +55,7 @@ typedef struct Out {
     int n;
     int changed; /* how many catalog.changed events were seen */
     int done;    /* how many sync.done events were seen */
+    int ready;   /* how many auth.ready events were seen */
 #ifdef _WIN32
     CRITICAL_SECTION lock;
 #else
@@ -88,6 +89,9 @@ static void capture(const char *json_line, void *ctx) {
     }
     if (strstr(json_line, "\"event\":\"sync.done\"") != NULL) {
         o->done++;
+    }
+    if (strstr(json_line, "\"event\":\"auth.ready\"") != NULL) {
+        o->ready++;
     }
     out_unlock(o);
 }
@@ -167,6 +171,31 @@ static int wait_done(Out *o, int n, unsigned ms) {
     }
 }
 
+/* Waits until at least `n` auth.ready events have been seen. */
+static int wait_ready(Out *o, int n, unsigned ms) {
+    unsigned waited = 0;
+    for (;;) {
+        out_lock(o);
+        int seen = o->ready;
+        out_unlock(o);
+        if (seen >= n) {
+            return 1;
+        }
+        if (waited >= ms) {
+            return 0;
+        }
+        T_SLEEP(5);
+        waited += 5;
+    }
+}
+
+/* What a response line says, without the request id it answered: two runs
+ * that answered the same question must say the same thing. */
+static const char *result_part(const char *line) {
+    const char *p = strstr(line, "\"result\":");
+    return p != NULL ? p : line;
+}
+
 static void out_free(Out *o) {
     for (int i = 0; i < o->n; i++) {
         free(o->line[i]);
@@ -183,6 +212,7 @@ static void out_free(Out *o) {
 /* The world the responder sees: the chat it serves and the calls it saw. */
 typedef struct World {
     FakeChat *chat;
+    FakeTd *fake;
     int history_calls;
     int option_calls;
     int chat_calls;
@@ -229,11 +259,31 @@ static char *answer(void *ctx, const char *request) {
     } else if (strcmp(t, "getMessage") == 0) {
         long long id = json_num(root, "message_id", 0);
         out = fake_chat_message_json(w->chat, id);
+    } else if (strcmp(t, "close") == 0) {
+        /* TDLib answers close and then reports authorizationStateClosed. The
+         * engine waits for that state (spec 9.4), so the fake has to send it:
+         * without it every shutdown would sit out the full ten seconds. */
+        out = _strdup("{\"@type\":\"ok\"}");
+        if (w->fake != NULL) {
+            fake_td_enqueue(w->fake,
+                            "{\"@type\":\"updateAuthorizationState\","
+                            "\"authorization_state\":{\"@type\":"
+                            "\"authorizationStateClosed\"}}");
+        }
     } else {
         out = _strdup("{\"@type\":\"ok\"}");
     }
     cJSON_Delete(root);
     return out;
+}
+
+/* Throws away whatever the fake still holds. The replies of one run carry the
+ * same @extra the next run uses, so a second run has to start with a clean
+ * script. The fake keeps ownership of the strings and frees them at the end. */
+static void fake_drain(FakeTd *f) {
+    while (f->api.receive(0.0) != NULL) {
+        /* keep throwing */
+    }
 }
 
 /* ---- engine thread --------------------------------------------------- */
@@ -274,7 +324,10 @@ static void run_in_thread(Run *r) {
 
 static void join_thread(Run *r) {
 #ifdef _WIN32
-    WaitForSingleObject(r->thread, 15000);
+    /* The engine may wait for authorizationStateClosed (spec 9.4), so the
+     * thread is given room - but it has to be over before the engine is
+     * freed, or the free would pull the ground from under the thread. */
+    assert(WaitForSingleObject(r->thread, 30000) == WAIT_OBJECT_0);
     CloseHandle(r->thread);
 #else
     pthread_join(r->thread, NULL);
@@ -326,6 +379,7 @@ int main(void) {
     FakeTd *fake = fake_td_start(4242);
     fake->responder = answer;
     fake->responder_ctx = &world;
+    world.fake = fake;
 
     Out out;
     memset(&out, 0, sizeof out);
@@ -491,6 +545,21 @@ int main(void) {
     /* the engine waited the cooldown out and the scan still finished */
     assert(wait_done(&out, done_before + 1, 15000) == 1);
 
+    /* ---- what the catalog looks like right now ------------------------ */
+    const char *snap_ids[4] = {
+        "{\"id\":20,\"cmd\":\"catalog.list\",\"args\":{\"folder_id\":\"root\"}}",
+        "{\"id\":21,\"cmd\":\"catalog.list\",\"args\":{\"folder_id\":\"inbox\"}}",
+        "{\"id\":22,\"cmd\":\"catalog.list\",\"args\":{\"folder_id\":\"lost\"}}",
+        "{\"id\":23,\"cmd\":\"catalog.summary\"}",
+    };
+    char *first[4];
+    for (int i = 0; i < 4; i++) {
+        tbox_engine_push_command(e, snap_ids[i]);
+        l = wait_for_id(&out, 20 + i, 5000);
+        assert(l != NULL && strstr(l, "\"ok\":true") != NULL);
+        first[i] = _strdup(result_part(l));
+    }
+
     /* ---- shutdown ----------------------------------------------------- */
     tbox_engine_push_command(e, "{\"id\":13,\"cmd\":\"engine.shutdown\"}");
     assert(wait_for_id(&out, 13, 5000) != NULL);
@@ -498,6 +567,60 @@ int main(void) {
     assert(r.rc == 0);
 
     tbox_engine_free(e);
+
+    /* ---- the database is thrown away: the next run must rebuild the very
+     * same catalog from Saved Messages alone (the phase exit test) ------- */
+    assert(tbox_fsx_remove("tbox_engine_catalog_test/index.db") == TBOX_FSX_OK);
+    tbox_fsx_remove("tbox_engine_catalog_test/index.db-wal");
+    tbox_fsx_remove("tbox_engine_catalog_test/index.db-shm");
+    fake_drain(fake);
+
+    int ready_before = out.ready;
+    int done_before_rebuild = out.done;
+
+    err = -1;
+    TBoxEngine *e2 = tbox_engine_new(&fake->api, &cfg, capture, &out, &err);
+    assert(e2 != NULL && err == 0);
+
+    Run r2;
+    memset(&r2, 0, sizeof r2);
+    r2.e = e2;
+    run_in_thread(&r2);
+
+    tbox_engine_push_command(e2,
+        "{\"id\":100,\"cmd\":\"auth.start\",\"args\":{\"api_id\":\"123\","
+        "\"api_hash\":\"deadbeef\"}}");
+    assert(wait_for_id(&out, 100, 3000) != NULL);
+
+    fake_td_enqueue(fake,
+        "{\"@type\":\"updateAuthorizationState\",\"authorization_state\":"
+        "{\"@type\":\"authorizationStateReady\"}}");
+    assert(wait_ready(&out, ready_before + 1, 5000) == 1);
+    /* the catalog was empty, so the whole history is read again */
+    assert(wait_done(&out, done_before_rebuild + 1, 20000) == 1);
+
+    const char *again[4] = {
+        "{\"id\":30,\"cmd\":\"catalog.list\",\"args\":{\"folder_id\":\"root\"}}",
+        "{\"id\":31,\"cmd\":\"catalog.list\",\"args\":{\"folder_id\":\"inbox\"}}",
+        "{\"id\":32,\"cmd\":\"catalog.list\",\"args\":{\"folder_id\":\"lost\"}}",
+        "{\"id\":33,\"cmd\":\"catalog.summary\"}",
+    };
+    for (int i = 0; i < 4; i++) {
+        tbox_engine_push_command(e2, again[i]);
+        l = wait_for_id(&out, 30 + i, 5000);
+        assert(l != NULL && strstr(l, "\"ok\":true") != NULL);
+        assert(strcmp(first[i], result_part(l)) == 0);
+    }
+
+    tbox_engine_push_command(e2, "{\"id\":101,\"cmd\":\"engine.shutdown\"}");
+    assert(wait_for_id(&out, 101, 5000) != NULL);
+    join_thread(&r2);
+    assert(r2.rc == 0);
+
+    tbox_engine_free(e2);
+    for (int i = 0; i < 4; i++) {
+        free(first[i]);
+    }
     out_free(&out);
     fake_td_free(fake);
     fake_chat_free(chat);
