@@ -1014,15 +1014,19 @@ static void shutdown_session(TBoxEngine *e) {
     if (e->session == NULL) {
         return;
     }
+    /* Detach before closing: the session belongs to this thread from here
+     * on, so nobody else can close it a second time. */
+    TBoxSession *s = e->session;
+    e->session = NULL;
     /* spec 9.4: ask TDLib to close, then wait (bounded, max 10 s) for
      * authorizationStateClosed. If it already arrived, there is nothing
      * to wait for. */
-    tbox_session_request_close(e->session);
+    tbox_session_request_close(s);
     if (strcmp(e->auth_state, "CLOSED") != 0) {
         unsigned waited = 0;
         TBoxSessionEventOut ev;
         while (waited < 10000) {
-            if (tbox_session_take_event(e->session, &ev, 100)) {
+            if (tbox_session_take_event(s, &ev, 100)) {
                 int closed = (ev.type == TBOX_SESSION_EV_CLOSED) ||
                              (ev.type == TBOX_SESSION_EV_AUTH_STATE &&
                               ev.data != NULL && strcmp(ev.data, "CLOSED") == 0);
@@ -1034,8 +1038,7 @@ static void shutdown_session(TBoxEngine *e) {
             waited += 100;
         }
     }
-    tbox_session_close(e->session);
-    e->session = NULL;
+    tbox_session_close(s);
 }
 
 int tbox_engine_run(TBoxEngine *e) {
@@ -1151,6 +1154,9 @@ void tbox_engine_free(TBoxEngine *e) {
         e->updates = NULL;
     }
     if (e->session != NULL) {
+        /* The run loop closes the session when it stops (shutdown_session).
+         * A session that is still here means the loop never ran, so this is
+         * the only place that can close it. */
         tbox_session_close(e->session);
         e->session = NULL;
     }
