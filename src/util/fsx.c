@@ -22,6 +22,7 @@
 #include "util/fsx.h"
 
 #include <stdlib.h>
+#include <string.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -97,6 +98,130 @@ int tbox_fsx_is_dir(const char *path) {
         return 0;
     }
     return fsx_is_dir(path);
+}
+
+/* ---- what is on disk --------------------------------------------------- */
+
+TBoxFsxStatus tbox_fsx_file_info(const char *path, TBoxFileInfo *out) {
+    if (path == NULL || path[0] == '\0' || out == NULL) {
+        return TBOX_FSX_E_ARGS;
+    }
+    memset(out, 0, sizeof *out);
+#ifdef _WIN32
+    wchar_t w[TBOX_FSX_WIDE];
+    if (fsx_wide(path, w, TBOX_FSX_WIDE) != 0) {
+        return TBOX_FSX_E_IO;
+    }
+    WIN32_FILE_ATTRIBUTE_DATA data;
+    if (!GetFileAttributesExW(w, GetFileExInfoStandard, &data)) {
+        return TBOX_FSX_OK; /* not there: exists stays 0 */
+    }
+    out->exists = 1;
+    out->is_dir = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
+    out->size = (long long)data.nFileSizeLow |
+                ((long long)data.nFileSizeHigh << 32);
+    /* FILETIME counts 100 ns ticks since 1601; Unix counts seconds since
+     * 1970, so the two epochs are 11644473600 seconds apart. */
+    ULARGE_INTEGER ticks;
+    ticks.LowPart = data.ftLastWriteTime.dwLowDateTime;
+    ticks.HighPart = data.ftLastWriteTime.dwHighDateTime;
+    out->mtime = (long long)(ticks.QuadPart / 10000000ULL) - 11644473600LL;
+#else
+    struct stat st;
+    if (stat(path, &st) != 0) {
+        return TBOX_FSX_OK; /* not there: exists stays 0 */
+    }
+    out->exists = 1;
+    out->is_dir = S_ISDIR(st.st_mode) ? 1 : 0;
+    out->size = (long long)st.st_size;
+    out->mtime = (long long)st.st_mtime;
+#endif
+    return TBOX_FSX_OK;
+}
+
+/* ---- reading a file ---------------------------------------------------- */
+
+struct TBoxFsxFile {
+#ifdef _WIN32
+    HANDLE handle;
+#else
+    FILE *fp;
+#endif
+};
+
+TBoxFsxStatus tbox_fsx_open_read(const char *path, TBoxFsxFile **out) {
+    if (path == NULL || path[0] == '\0' || out == NULL) {
+        return TBOX_FSX_E_ARGS;
+    }
+    *out = NULL;
+    TBoxFsxFile *f = (TBoxFsxFile *)calloc(1, sizeof *f);
+    if (f == NULL) {
+        return TBOX_FSX_E_MEM;
+    }
+#ifdef _WIN32
+    wchar_t w[TBOX_FSX_WIDE];
+    if (fsx_wide(path, w, TBOX_FSX_WIDE) != 0) {
+        free(f);
+        return TBOX_FSX_E_IO;
+    }
+    /* FILE_SHARE_READ lets the file be read while Telegram is writing it;
+     * the upload reads a file the user may still be editing. */
+    f->handle = CreateFileW(w, GENERIC_READ, FILE_SHARE_READ, NULL,
+                             OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f->handle == INVALID_HANDLE_VALUE) {
+        free(f);
+        return TBOX_FSX_E_IO;
+    }
+#else
+    f->fp = fopen(path, "rb");
+    if (f->fp == NULL) {
+        free(f);
+        return TBOX_FSX_E_IO;
+    }
+#endif
+    *out = f;
+    return TBOX_FSX_OK;
+}
+
+TBoxFsxStatus tbox_fsx_read(TBoxFsxFile *f, void *buf, size_t cap,
+                             size_t *read) {
+    if (f == NULL || buf == NULL || read == NULL) {
+        return TBOX_FSX_E_ARGS;
+    }
+    *read = 0;
+    if (cap == 0) {
+        return TBOX_FSX_OK;
+    }
+#ifdef _WIN32
+    DWORD got = 0;
+    if (!ReadFile(f->handle, buf, (DWORD)cap, &got, NULL)) {
+        return TBOX_FSX_E_IO;
+    }
+    *read = (size_t)got;
+#else
+    size_t got = fread(buf, 1, cap, f->fp);
+    if (got == 0 && ferror(f->fp)) {
+        return TBOX_FSX_E_IO;
+    }
+    *read = got;
+#endif
+    return TBOX_FSX_OK;
+}
+
+void tbox_fsx_close_read(TBoxFsxFile *f) {
+    if (f == NULL) {
+        return;
+    }
+#ifdef _WIN32
+    if (f->handle != INVALID_HANDLE_VALUE) {
+        (void)CloseHandle(f->handle);
+    }
+#else
+    if (f->fp != NULL) {
+        (void)fclose(f->fp);
+    }
+#endif
+    free(f);
 }
 
 TBoxFsxStatus tbox_fsx_mkdirs(const char *path) {

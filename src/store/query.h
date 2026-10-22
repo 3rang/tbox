@@ -108,6 +108,14 @@ TBoxDbStatus tbox_query_list(TBoxDb *db, const char *folder_id,
 TBoxDbStatus tbox_query_get(TBoxDb *db, const char *object_id,
                             TBoxListItem *item, int *found);
 
+/* Finds the live item of a folder that goes by this name. The compare is
+ * case-insensitive and only live items count (spec 7.4), so this is what
+ * decides whether a new file may take that name. Returns TBOX_DB_OK and sets
+ * *found; *item is untouched when no item has that name. */
+TBoxDbStatus tbox_query_find_by_name(TBoxDb *db, const char *parent_id,
+                                     const char *name, TBoxListItem *item,
+                                     int *found);
+
 /* Lists the Inbox in newest-first order. Free with tbox_query_free_inbox(). */
 TBoxDbStatus tbox_query_inbox(TBoxDb *db, TBoxInboxRow **items,
                               size_t *count);

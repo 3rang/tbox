@@ -29,6 +29,8 @@
 #include "sync/updates.h"
 #include "util/fsx.h"
 #include "util/log.h"
+#include "xfer/ops.h"
+#include "xfer/upload.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -85,6 +87,16 @@ struct TBoxEngine {
     int bootstrapped;     /* the startup catalog step ran */
     int resync_done;      /* the resync reconcile already ran */
     long long cooldown_until; /* unix seconds; 0 = no cooldown (spec 9.1) */
+
+    /* the upload in flight (spec 8.5: one upload at a time) */
+    int upload_busy;           /* a file is on its way up */
+    int upload_pending;        /* the loop has an upload to pick up */
+    long long upload_next_at;  /* the earliest time a waiting op may run */
+    char upload_op[TBOX_OP_HEX_LEN + 1];
+    char upload_file[TBOX_MSGID_MAX_BYTES + 1];
+    char *upload_path;         /* the file being sent (heap) */
+    long long upload_size;
+    long long upload_mtime;
 
     /* command queue: stdin thread writes, loop thread reads */
     EngineCmd *qhead;
@@ -843,6 +855,492 @@ static void cmd_catalog_summary(TBoxEngine *e, const TBoxProtoRequest *req) {
     cJSON_Delete(r);
 }
 
+/* ---- uploads (spec 8.5) ----------------------------------------------- */
+
+/* The upload's way of talking to TDLib: one request, one reply. */
+static cJSON *engine_upload_call(void *ctx, const char *request) {
+    TBoxEngine *e = ctx;
+    return engine_call(e, request, TBOX_ENGINE_CALL_TIMEOUT_MS);
+}
+
+/* The world the upload module works in. */
+static void engine_upload_env(TBoxEngine *e, TBoxUploadEnv *env) {
+    memset(env, 0, sizeof *env);
+    env->db = e->db;
+    env->call = engine_upload_call;
+    env->call_ctx = e;
+    env->chat_id = e->saved_chat;
+    env->caption_limit = (unsigned)e->caption_limit;
+    env->is_premium = e->session != NULL && tbox_session_is_premium(e->session);
+    env->now = (long long)time(NULL);
+}
+
+/* The error the protocol shows for a failed upload. */
+static TBoxProtoError engine_upload_error(TBoxUploadStatus status) {
+    switch (status) {
+    case TBOX_UPLOAD_E_ARGS:
+        return TBOX_PROTO_ERR_BAD_ARGS;
+    case TBOX_UPLOAD_E_FILE:
+    case TBOX_UPLOAD_E_FOLDER:
+        return TBOX_PROTO_ERR_NOT_FOUND;
+    case TBOX_UPLOAD_E_TOO_LARGE:
+        return TBOX_PROTO_ERR_FILE_TOO_LARGE;
+    case TBOX_UPLOAD_E_NAME:
+    case TBOX_UPLOAD_E_CAPTION:
+        return TBOX_PROTO_ERR_NAME_INVALID;
+    case TBOX_UPLOAD_E_EXISTS:
+        return TBOX_PROTO_ERR_NAME_EXISTS;
+    case TBOX_UPLOAD_E_IO:
+        return TBOX_PROTO_ERR_IO;
+    case TBOX_UPLOAD_E_DB:
+        return TBOX_PROTO_ERR_DB;
+    case TBOX_UPLOAD_E_TD:
+        return TBOX_PROTO_ERR_TD;
+    default:
+        return TBOX_PROTO_ERR_INTERNAL;
+    }
+}
+
+/* Tells the front that an operation did not work out (spec 6.5). */
+static void engine_emit_transfer_failed(TBoxEngine *e, const char *op_id,
+                                         TBoxProtoError code,
+                                         const char *message) {
+    cJSON *d = cJSON_CreateObject();
+    if (d == NULL) {
+        return;
+    }
+    cJSON_AddStringToObject(d, "op_id", op_id != NULL ? op_id : "");
+    cJSON *err = cJSON_AddObjectToObject(d, "error");
+    cJSON_AddStringToObject(err, "code", tbox_proto_error_code(code));
+    cJSON_AddStringToObject(err, "message", message != NULL ? message : "");
+    emit_event(e, "transfer.failed", d);
+    cJSON_Delete(d);
+}
+
+/* An upload that did not work out. The operation waits and tries again, or
+ * gives up (spec 8.4: 5 s, 30 s, 2 min, 10 min). */
+static void engine_fail_upload(TBoxEngine *e, const char *op_id,
+                                TBoxProtoError code, const char *message) {
+    if (e->db == NULL || op_id == NULL || op_id[0] == '\0') {
+        return;
+    }
+    long long now = (long long)time(NULL);
+
+    TBoxOpRow row;
+    memset(&row, 0, sizeof row);
+    int found = 0;
+    (void)tbox_journal_get(e->db, op_id, &row, &found);
+    TBoxOpState from = TBOX_OP_QUEUED;
+    if (found) {
+        (void)tbox_op_state_parse(row.state, &from);
+    }
+    tbox_journal_free_row(&row);
+
+    int attempts = 0;
+    (void)tbox_journal_bump_attempts(e->db, op_id, now, &attempts);
+    int wait = tbox_op_backoff_seconds(attempts);
+    const char *state;
+    if (wait < 0) {
+        state = "FAILED"; /* it has used up its tries */
+    } else if (from == TBOX_OP_SENT) {
+        /* Telegram had it and then said no: it never made it out, so it goes
+         * back into the queue. */
+        state = "QUEUED";
+    } else if (from == TBOX_OP_RUNNING) {
+        state = "RETRY_WAIT";
+    } else {
+        state = "FAILED"; /* it never got off the ground */
+    }
+    long long next_try_at = wait < 0 ? 0 : now + wait;
+    (void)tbox_journal_set_state(e->db, op_id, state,
+                                 tbox_proto_error_code(code), next_try_at, now);
+    engine_emit_transfer_failed(e, op_id, code, message);
+    tbox_log_write(e->log, TBOX_LOG_WARN, "xfer", op_id, message, NULL);
+    if (strcmp(e->upload_op, op_id) == 0) {
+        e->upload_busy = 0;
+    }
+    e->upload_pending = 1;
+    e->upload_next_at = wait < 0 ? 0 : next_try_at;
+}
+
+/* The object an operation is about, out of the arguments it kept. */
+static void engine_op_object_id(TBoxEngine *e, const char *op_id, char *out,
+                                size_t cap) {
+    if (out == NULL || cap == 0) {
+        return;
+    }
+    out[0] = '\0';
+    TBoxOpRow row;
+    memset(&row, 0, sizeof row);
+    int found = 0;
+    if (tbox_journal_get(e->db, op_id, &row, &found) != TBOX_DB_OK || !found) {
+        tbox_journal_free_row(&row);
+        return;
+    }
+    TBoxUploadArgs args;
+    if (tbox_upload_args_parse(row.args_json, &args)) {
+        snprintf(out, cap, "%s", args.object_id != NULL ? args.object_id : "");
+        tbox_upload_args_free(&args);
+    }
+    tbox_journal_free_row(&row);
+}
+
+/* The operation that is waiting for this message id. */
+static int engine_find_op_by_temp(TBoxEngine *e, const char *msg_id,
+                                  char *op_id, size_t cap) {
+    if (e->db == NULL || msg_id == NULL || msg_id[0] == '\0') {
+        return 0;
+    }
+    TBoxOpRow *rows = NULL;
+    size_t count = 0;
+    if (tbox_journal_list_active(e->db, &rows, &count) != TBOX_DB_OK) {
+        return 0;
+    }
+    int found = 0;
+    for (size_t i = 0; i < count && !found; i++) {
+        if (rows[i].temp_msg_id[0] != '\0' &&
+            strcmp(rows[i].temp_msg_id, msg_id) == 0) {
+            snprintf(op_id, cap, "%s", rows[i].op_id);
+            found = 1;
+        }
+    }
+    tbox_journal_free_rows(rows, count);
+    return found;
+}
+
+/* Runs one upload: the checks, the hash and the message (spec 8.5). */
+static void engine_start_upload(TBoxEngine *e, const char *op_id,
+                                 const char *args_json) {
+    long long now = (long long)time(NULL);
+    TBoxUploadArgs args;
+    if (!tbox_upload_args_parse(args_json, &args)) {
+        engine_fail_upload(e, op_id, TBOX_PROTO_ERR_INTERNAL,
+                           "the operation has no usable arguments");
+        return;
+    }
+    /* the operation is on its way now: from here on a failure waits and
+     * tries again (spec 8.4) */
+    if (tbox_journal_set_state(e->db, op_id, "RUNNING", NULL, 0, now) !=
+        TBOX_DB_OK) {
+        tbox_upload_args_free(&args);
+        engine_fail_upload(e, op_id, TBOX_PROTO_ERR_INTERNAL,
+                           "the operation could not be written down");
+        return;
+    }
+
+    TBoxUploadEnv env;
+    engine_upload_env(e, &env);
+    TBoxUploadRequest ureq;
+    memset(&ureq, 0, sizeof ureq);
+    ureq.local_path = args.local_path;
+    ureq.folder_id = args.folder_id;
+    ureq.name = args.name;
+
+    char err[256];
+    err[0] = '\0';
+    TBoxUploadChecked checked;
+    TBoxUploadStatus st =
+        tbox_upload_check(&env, &ureq, &checked, err, sizeof err);
+    if (st == TBOX_UPLOAD_OK) {
+        TBoxUploadPlan plan;
+        st = tbox_upload_send(&env, op_id, args.object_id, &checked,
+                              args.local_path, &plan, err, sizeof err);
+        if (st == TBOX_UPLOAD_OK) {
+            /* remember the flight: the progress and the end of it come with
+             * the id of the file */
+            e->upload_busy = 1;
+            snprintf(e->upload_op, sizeof e->upload_op, "%s", plan.op_id);
+            snprintf(e->upload_file, sizeof e->upload_file, "%s", plan.file_id);
+            free(e->upload_path);
+            e->upload_path = TBOX_STRDUP(args.local_path);
+            e->upload_size = plan.size;
+            e->upload_mtime = plan.mtime;
+            tbox_upload_args_free(&args);
+            tbox_log_write(e->log, TBOX_LOG_INFO, "xfer", op_id,
+                           "the file is on its way", NULL);
+            return;
+        }
+    }
+    tbox_upload_args_free(&args);
+    engine_fail_upload(e, op_id, engine_upload_error(st), err);
+}
+
+/* Starts the upload that is next in the queue (spec 8.5: one at a time).
+ * The queue is the journal itself, so an operation that was left over from
+ * a crash is picked up as well. */
+static void engine_run_uploads(TBoxEngine *e) {
+    if (e->db == NULL || e->session == NULL || e->saved_chat == 0) {
+        return;
+    }
+    if (!e->upload_pending) {
+        return;
+    }
+    long long now = (long long)time(NULL);
+    if (now < e->upload_next_at) {
+        return;
+    }
+    e->upload_pending = 0;
+    if (e->upload_busy) {
+        return; /* one upload at a time */
+    }
+    if (engine_cooldown_left(e) > 0) {
+        /* spec 9.1: Telegram asked us to slow down, and a flood wait
+         * overrides the retry delay. */
+        e->upload_pending = 1;
+        return;
+    }
+
+    TBoxOpRow *rows = NULL;
+    size_t count = 0;
+    if (tbox_journal_list_active(e->db, &rows, &count) != TBOX_DB_OK) {
+        return;
+    }
+    char op_id[TBOX_OP_HEX_LEN + 1];
+    char *args_json = NULL;
+    long long next_at = 0;
+    op_id[0] = '\0';
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(rows[i].kind, TBOX_OP_KIND_UPLOAD) != 0) {
+            continue;
+        }
+        if (strcmp(rows[i].state, "QUEUED") != 0 &&
+            strcmp(rows[i].state, "RETRY_WAIT") != 0) {
+            continue;
+        }
+        if (rows[i].next_try_at > now) {
+            if (next_at == 0 || rows[i].next_try_at < next_at) {
+                next_at = rows[i].next_try_at;
+            }
+            continue;
+        }
+        snprintf(op_id, sizeof op_id, "%s", rows[i].op_id);
+        if (rows[i].args_json != NULL) {
+            args_json = TBOX_STRDUP(rows[i].args_json);
+        }
+        break;
+    }
+    tbox_journal_free_rows(rows, count);
+
+    if (op_id[0] == '\0') {
+        /* nothing to do now: wake up when the earliest waiting op is due */
+        e->upload_next_at = next_at;
+        return;
+    }
+    engine_start_upload(e, op_id, args_json);
+    free(args_json);
+}
+
+/* updateFile: the progress of the file that is going up (spec 8.5 step 6). */
+static void engine_upload_progress(TBoxEngine *e, const cJSON *update) {
+    if (!e->upload_busy || e->upload_path == NULL) {
+        return;
+    }
+    const cJSON *file = cJSON_GetObjectItemCaseSensitive(update, "file");
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(file, "id");
+    if (!cJSON_IsNumber(id)) {
+        return;
+    }
+    char file_id[TBOX_MSGID_MAX_BYTES + 1];
+    snprintf(file_id, sizeof file_id, "%lld", (long long)id->valuedouble);
+    if (strcmp(file_id, e->upload_file) != 0) {
+        return; /* some other file */
+    }
+
+    /* spec 8.5 step 9: the file must not change while it goes up. TDLib
+     * cannot stop an upload that is already running, so the operation is
+     * marked for the user and the message it leaves behind is theirs to
+     * delete. */
+    TBoxFileInfo info;
+    if (tbox_fsx_file_info(e->upload_path, &info) == TBOX_FSX_OK &&
+        info.exists &&
+        (info.size != e->upload_size || info.mtime != e->upload_mtime)) {
+        long long now = (long long)time(NULL);
+        (void)tbox_journal_set_state(e->db, e->upload_op, "NEEDS_ATTENTION",
+                                     "CANCELLED", 0, now);
+        engine_emit_transfer_failed(e, e->upload_op, TBOX_PROTO_ERR_CANCELLED,
+                                    "the file changed while it was being sent");
+        tbox_log_write(e->log, TBOX_LOG_WARN, "xfer", e->upload_op,
+                       "the file changed while it was being sent", NULL);
+        e->upload_pending = 1;
+        return;
+    }
+
+    const cJSON *size = cJSON_GetObjectItemCaseSensitive(file, "size");
+    const cJSON *expected =
+        cJSON_GetObjectItemCaseSensitive(file, "expected_size");
+    long long done = cJSON_IsNumber(size) ? (long long)size->valuedouble : 0;
+    long long total = cJSON_IsNumber(expected)
+                          ? (long long)expected->valuedouble
+                          : e->upload_size;
+    cJSON *d = cJSON_CreateObject();
+    if (d == NULL) {
+        return;
+    }
+    cJSON_AddStringToObject(d, "op_id", e->upload_op);
+    cJSON_AddNumberToObject(d, "done", (double)done);
+    cJSON_AddNumberToObject(d, "total", (double)total);
+    emit_event(e, "transfer.progress", d);
+    cJSON_Delete(d);
+}
+
+/* updateMessageSendSucceeded: the file is in Saved Messages (spec 8.5
+ * step 7). The operation is done and the front is told. */
+static void engine_upload_succeeded(TBoxEngine *e, const cJSON *update) {
+    const cJSON *msg = cJSON_GetObjectItemCaseSensitive(update, "message");
+    const cJSON *new_id = cJSON_GetObjectItemCaseSensitive(msg, "id");
+    const cJSON *old_id =
+        cJSON_GetObjectItemCaseSensitive(update, "old_message_id");
+    if (!cJSON_IsNumber(old_id)) {
+        return;
+    }
+    char old_buf[TBOX_MSGID_MAX_BYTES + 1];
+    char new_buf[TBOX_MSGID_MAX_BYTES + 1];
+    snprintf(old_buf, sizeof old_buf, "%lld", (long long)old_id->valuedouble);
+    new_buf[0] = '\0';
+    if (cJSON_IsNumber(new_id)) {
+        snprintf(new_buf, sizeof new_buf, "%lld", (long long)new_id->valuedouble);
+    }
+    char op_id[TBOX_OP_HEX_LEN + 1];
+    op_id[0] = '\0';
+    if (!engine_find_op_by_temp(e, old_buf, op_id, sizeof op_id) &&
+        !engine_find_op_by_temp(e, new_buf, op_id, sizeof op_id)) {
+        /* The catalog already moved the temporary id to the real one
+         * (spec 8.3), so the operation is looked for under both. */
+        return;
+    }
+    long long now = (long long)time(NULL);
+    if (tbox_journal_set_state(e->db, op_id, "DONE", NULL, 0, now) ==
+        TBOX_DB_OK) {
+        char object_id[TBOX_ID_HEX_LEN + 1];
+        engine_op_object_id(e, op_id, object_id, sizeof object_id);
+        cJSON *d = cJSON_CreateObject();
+        if (d != NULL) {
+            cJSON_AddStringToObject(d, "op_id", op_id);
+            cJSON_AddStringToObject(d, "object_id", object_id);
+            emit_event(e, "transfer.done", d);
+            cJSON_Delete(d);
+        }
+    }
+    if (strcmp(e->upload_op, op_id) == 0) {
+        e->upload_busy = 0;
+    }
+    e->upload_pending = 1;
+}
+
+/* updateMessageSendFailed: the message did not make it (spec 8.5). */
+static void engine_upload_failed(TBoxEngine *e, const cJSON *update) {
+    const cJSON *mid = cJSON_GetObjectItemCaseSensitive(update, "message_id");
+    if (!cJSON_IsNumber(mid)) {
+        return;
+    }
+    char buf[TBOX_MSGID_MAX_BYTES + 1];
+    snprintf(buf, sizeof buf, "%lld", (long long)mid->valuedouble);
+    char op_id[TBOX_OP_HEX_LEN + 1];
+    if (!engine_find_op_by_temp(e, buf, op_id, sizeof op_id)) {
+        return;
+    }
+    const cJSON *code = cJSON_GetObjectItemCaseSensitive(update, "error_code");
+    char message[160];
+    snprintf(message, sizeof message, "the message could not be sent (%d)",
+             cJSON_IsNumber(code) ? (int)code->valuedouble : 0);
+    engine_fail_upload(e, op_id, TBOX_PROTO_ERR_TD, message);
+}
+
+/* The updates that are about a transfer (spec 8.5). */
+static void engine_transfer_update(TBoxEngine *e, const char *update_json) {
+    if (update_json == NULL) {
+        return;
+    }
+    cJSON *update = cJSON_Parse(update_json);
+    if (update == NULL || !cJSON_IsObject(update)) {
+        cJSON_Delete(update);
+        return;
+    }
+    const cJSON *type = cJSON_GetObjectItemCaseSensitive(update, "@type");
+    const char *t = cJSON_IsString(type) ? cJSON_GetStringValue(type) : "";
+    if (strcmp(t, "updateFile") == 0) {
+        engine_upload_progress(e, update);
+    } else if (strcmp(t, "updateMessageSendSucceeded") == 0) {
+        engine_upload_succeeded(e, update);
+    } else if (strcmp(t, "updateMessageSendFailed") == 0) {
+        engine_upload_failed(e, update);
+    }
+    cJSON_Delete(update);
+}
+
+/* file.upload: the file goes into Saved Messages (spec 8.5). The answer
+ * goes out first, with the operation id; the upload follows, one at a time
+ * (spec 6.2). */
+static void cmd_file_upload(TBoxEngine *e, const TBoxProtoRequest *req) {
+    if (!e->ready || e->session == NULL) {
+        respond_err(e, req->id, TBOX_PROTO_ERR_NOT_AUTHORIZED,
+                    "the session is not authorized yet");
+        return;
+    }
+    if (e->saved_chat == 0) {
+        respond_err(e, req->id, TBOX_PROTO_ERR_NOT_FOUND,
+                    "Saved Messages is not open yet");
+        return;
+    }
+    const char *local_path = tbox_proto_arg_str(req->args, "local_path");
+    const char *folder_id = tbox_proto_arg_str(req->args, "folder_id");
+    const char *name = tbox_proto_arg_str(req->args, "name");
+    const char *on_exists = tbox_proto_arg_str(req->args, "on_exists");
+    if (local_path == NULL || local_path[0] == '\0' || folder_id == NULL ||
+        folder_id[0] == '\0') {
+        respond_err(e, req->id, TBOX_PROTO_ERR_BAD_ARGS,
+                    "file.upload requires args.local_path and args.folder_id");
+        return;
+    }
+    if (on_exists != NULL && on_exists[0] != '\0' &&
+        strcmp(on_exists, "error") != 0) {
+        /* the other mode - a new revision of an object that is already
+         * there - is not here yet; saying so beats pretending */
+        respond_err(e, req->id, TBOX_PROTO_ERR_BAD_ARGS,
+                    "on_exists must be \"error\"");
+        return;
+    }
+    int left = engine_cooldown_left(e);
+    if (left > 0) {
+        respond_err_wait(e, req->id, "Telegram asked us to slow down", left);
+        return;
+    }
+
+    TBoxUploadEnv env;
+    engine_upload_env(e, &env);
+    TBoxUploadRequest ureq;
+    memset(&ureq, 0, sizeof ureq);
+    ureq.local_path = local_path;
+    ureq.folder_id = folder_id;
+    ureq.name = name;
+
+    char err[256];
+    err[0] = '\0';
+    TBoxUploadChecked checked;
+    TBoxUploadStatus st =
+        tbox_upload_check(&env, &ureq, &checked, err, sizeof err);
+    if (st != TBOX_UPLOAD_OK) {
+        respond_err(e, req->id, engine_upload_error(st), err);
+        return;
+    }
+    TBoxUploadOp op;
+    st = tbox_upload_queue(&env, &ureq, &checked, &op, err, sizeof err);
+    if (st != TBOX_UPLOAD_OK) {
+        respond_err(e, req->id, engine_upload_error(st), err);
+        return;
+    }
+    cJSON *r = cJSON_CreateObject();
+    if (r == NULL) {
+        respond_err(e, req->id, TBOX_PROTO_ERR_INTERNAL, "out of memory");
+        return;
+    }
+    cJSON_AddStringToObject(r, "op_id", op.op_id);
+    respond_ok(e, req->id, r);
+    cJSON_Delete(r);
+    /* the engine sends it when it is its turn */
+    e->upload_pending = 1;
+}
+
 /* Dispatch table. Returning 0 means "not a known command". */
 static void dispatch(TBoxEngine *e, const TBoxProtoRequest *req) {
     if (strcmp(req->cmd, "hello") == 0) {
@@ -865,6 +1363,8 @@ static void dispatch(TBoxEngine *e, const TBoxProtoRequest *req) {
         cmd_catalog_stat(e, req);
     } else if (strcmp(req->cmd, "catalog.summary") == 0) {
         cmd_catalog_summary(e, req);
+    } else if (strcmp(req->cmd, "file.upload") == 0) {
+        cmd_file_upload(e, req);
     } else {
         respond_err(e, req->id, TBOX_PROTO_ERR_UNKNOWN_CMD,
                     "unknown command");
@@ -961,6 +1461,8 @@ static void handle_session_event(TBoxEngine *e, const TBoxSessionEventOut *ev) {
                 engine_reconcile(e);
             }
         }
+        /* the transfers: the progress and the end of an upload (spec 8.5) */
+        engine_transfer_update(e, ev->data);
         break;
     default:
         break; /* transfer/sync events arrive with their phases */
@@ -1106,6 +1608,8 @@ int tbox_engine_run(TBoxEngine *e) {
             continue; /* drain the queue before sleeping */
         }
         drain_session(e);
+        /* spec 8.5: the uploads go one at a time. */
+        engine_run_uploads(e);
         if (e->session != NULL && tbox_session_resync_needed(e->session) &&
             !e->resync_done) {
             e->resync_done = 1;
@@ -1213,6 +1717,8 @@ void tbox_engine_free(TBoxEngine *e) {
         e->session = NULL;
     }
     tbox_db_close(e->db);
+    free(e->upload_path);
+    e->upload_path = NULL;
     EngineCmd *c = e->qhead;
     while (c != NULL) {
         EngineCmd *next = c->next;

@@ -25,10 +25,38 @@ typedef enum TBoxFsxStatus {
 
 typedef struct TBoxFsxLock TBoxFsxLock;
 
+/* What is known about a file on disk. */
+typedef struct TBoxFileInfo {
+    int       exists;  /* 1 when the path names something */
+    int       is_dir;  /* 1 when it is a directory */
+    long long size;    /* the size in bytes */
+    long long mtime;   /* the last change, in Unix seconds */
+} TBoxFileInfo;
+
+/* A file opened for reading. */
+typedef struct TBoxFsxFile TBoxFsxFile;
+
 /* fopen with a UTF-8 path; NULL on any failure (invalid args, path that
  * does not convert, OS refusal). mode is a short standard mode like
  * "rb" / "wb" / "ab". */
 FILE *tbox_fsx_fopen(const char *path, const char *mode);
+
+/* What is on disk at path. A missing path is not an error: exists is 0 and
+ * the rest is zeroed. */
+TBoxFsxStatus tbox_fsx_file_info(const char *path, TBoxFileInfo *out);
+
+/* Opens a file for reading. Returns TBOX_FSX_OK and a handle the caller
+ * closes with tbox_fsx_close_read(), or TBOX_FSX_E_IO when the file is not
+ * there or cannot be opened. */
+TBoxFsxStatus tbox_fsx_open_read(const char *path, TBoxFsxFile **out);
+
+/* Reads up to cap bytes. *read gets the number of bytes read; 0 means the
+ * end of the file. TBOX_FSX_E_IO when the OS refuses the read. */
+TBoxFsxStatus tbox_fsx_read(TBoxFsxFile *f, void *buf, size_t cap,
+                             size_t *read);
+
+/* Closes a file opened with tbox_fsx_open_read(). NULL is a no-op. */
+void tbox_fsx_close_read(TBoxFsxFile *f);
 
 /* Creates every component of path; succeeds if it already exists, fails
  * if a component exists but is not a directory. */

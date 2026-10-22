@@ -194,14 +194,34 @@ event. All Telegram IDs are sent as **strings** (they can exceed 2^53).
 {"event": "sync.progress", "data": {"op_id": "…", "messages_scanned": 120}}
 {"event": "sync.done", "data": {"op_id": "…", "objects": 12, "inbox_items": 3}}
 {"event": "catalog.changed", "data": {"folder_ids": ["*"]}}
+{"event": "transfer.progress", "data": {"op_id": "…", "done": 1234, "total": 5678}}
+{"event": "transfer.done", "data": {"op_id": "…", "object_id": "…32 hex…"}}
+{"event": "transfer.failed", "data": {"op_id": "…", "error": "RETRY_WAIT"}}
 ```
 
 The commands that exist today are `hello`, `auth.start`, `auth.password`,
 `auth.logout`, `engine.status`, `engine.shutdown`, `sync.rescan`,
-`catalog.list`, `catalog.stat` and `catalog.summary`; later stages add
-`file.*`, `folder.*`, `trash.*` and `search.*` (spec §6.4). `serve` exits
-`0` on a clean shutdown, `2` when the profile is already in use, `3` for bad
-arguments and `4` for a database error.
+`catalog.list`, `catalog.stat`, `catalog.summary` and `file.upload`; later
+stages add the rest of `file.*`, `folder.*`, `trash.*` and `search.*`
+(spec §6.4). `serve` exits `0` on a clean shutdown, `2` when the profile is
+already in use, `3` for bad arguments and `4` for a database error.
+
+### Putting a file up
+
+`file.upload` takes a local path and a folder and answers right away with the
+id of the operation it started:
+
+```jsonc
+{"id": 8, "cmd": "file.upload", "args": {"local_path": "C:\\files\\report.pdf", "folder_id": "root"}}
+{"id": 8, "ok": true, "result": {"op_id": "8f3c…"}}
+```
+
+The engine checks the file and its size, checks that the name is free in that
+folder (`NAME_EXISTS` when it is not), hashes the file, writes the operation
+down and then sends the message — one upload at a time, with the progress
+reported as `transfer.progress` and the end of it as `transfer.done`. If
+Telegram refuses the message the operation waits and tries again; when it
+keeps refusing, the operation is `FAILED` and `transfer.failed` says why.
 
 The engine is a child process, so a crash inside TDLib cannot take the front
 down with it, and the whole conversation can be logged and replayed.
@@ -218,6 +238,8 @@ tbx1 {"v":1,"k":"f","o":"…32 hex…","p":"root","n":"report.pdf","r":2,"s":123
 The record names the object (`o`), its parent folder (`p`), the name (`n`)
 and the revision (`r`). A file without a valid record is an **unmanaged
 file** and lands in the **Inbox**; a text message without one is a note.
+A file that was uploaded also carries its size (`s`), its hash (`h`), its
+mtime (`m`) and the id of the operation that sent it (`q`).
 
 The engine reads Saved Messages at startup, writes every message it sees
 into `index.db` and derives the folder tree from those rows — always through
@@ -233,6 +255,13 @@ anything new: an operation whose message is already in Saved Messages — its
 record carries the id of the operation that sent it — is done and is not sent
 a second time; the rest go back into the queue. `engine.status` says how
 many are still open.
+
+The upload is the first thing that uses that journal. The checks a file needs
+are cheap, so they happen before anything is sent; the message itself is sent
+by the engine's runner, one at a time, and the operation moves through
+`QUEUED`, `RUNNING`, `SENT` and `DONE` as Telegram takes it. When Telegram
+refuses a message the operation waits five seconds, then thirty, then two
+minutes, then ten, and only then gives up.
 
 ## Security notes
 

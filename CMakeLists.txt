@@ -54,6 +54,19 @@ if(MSVC)
   target_compile_options(tbox_xfer PRIVATE /W4)
 endif()
 
+# tbox_transfer — the transfers themselves: the content hash of a file and
+# the upload of a local file into Saved Messages (spec 8.5). It reads and
+# writes through tbox_store (the catalog and the ops journal), so it sits
+# above the store and the pure state machine.
+add_library(tbox_transfer STATIC src/xfer/hash.c src/xfer/upload.c)
+target_include_directories(tbox_transfer PUBLIC src)
+target_link_libraries(tbox_transfer PUBLIC tbox_store tbox_xfer tbox_catalog
+                                      tbox_util_fsx tbox_util_rand tbox_sha256
+                                      cjson)
+if(MSVC)
+  target_compile_options(tbox_transfer PRIVATE /W4)
+endif()
+
 # tbox_catalog — pure catalog logic: the tbx1 record (spec 7.2) and the S8
 # name rules. No TDLib, no filesystem, no SQLite, so its tests run anywhere
 # (CI-friendly) and both the scan and mutation paths share it.
@@ -185,7 +198,7 @@ add_library(tbox_engine STATIC
   src/engine/transport_stdio.c
 )
 target_include_directories(tbox_engine PUBLIC src)
-target_link_libraries(tbox_engine PUBLIC tbox_td_core cjson tbox_util_log tbox_store tbox_sync)
+target_link_libraries(tbox_engine PUBLIC tbox_td_core cjson tbox_util_log tbox_store tbox_sync tbox_transfer)
 if(MSVC)
   target_compile_options(tbox_engine PRIVATE /W4)
 endif()
@@ -275,6 +288,25 @@ target_link_libraries(test_journal PRIVATE tbox_store tbox_util_fsx)
 add_test(NAME store_journal COMMAND test_journal)
 if(MSVC)
   target_compile_options(test_journal PRIVATE /W4)
+endif()
+
+# The upload (spec 8.5): the checks, the hash, the record that goes with the
+# file and the message that carries it.
+add_executable(test_upload tests/test_upload.c)
+target_link_libraries(test_upload PRIVATE tbox_transfer tbox_store tbox_util_fsx)
+add_test(NAME xfer_upload COMMAND test_upload)
+if(MSVC)
+  target_compile_options(test_upload PRIVATE /W4)
+endif()
+
+# The upload over the whole engine: the command, the operation in the
+# journal, the message that carries the record and the events that go with
+# it - against the fake TDLib, without a dll and without a network.
+add_executable(test_engine_upload tests/test_engine_upload.c)
+target_link_libraries(test_engine_upload PRIVATE tbox_engine tbox_fake_chat)
+add_test(NAME engine_upload COMMAND test_engine_upload)
+if(MSVC)
+  target_compile_options(test_engine_upload PRIVATE /W4)
 endif()
 
 # The in-memory Saved Messages chat the sync tests drive. It is a test-only

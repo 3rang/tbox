@@ -303,6 +303,15 @@ static int is_catalog_update(const char *t) {
            strcmp(t, "updateMessageSendSucceeded") == 0;
 }
 
+/* The updates that drive the transfers (spec 8.5, 8.6). They name no chat
+ * - a file that is going up and a message that failed are the engine's
+ * business wherever they come from - so they are not held back by the
+ * Saved Messages check below. */
+static int is_transfer_update(const char *t) {
+    return strcmp(t, "updateFile") == 0 ||
+           strcmp(t, "updateMessageSendFailed") == 0;
+}
+
 static void session_update(void *user_data, const cJSON *update) {
     TBoxSession *s = user_data;
     const cJSON *type = cJSON_GetObjectItemCaseSensitive(update, "@type");
@@ -317,6 +326,15 @@ static void session_update(void *user_data, const cJSON *update) {
         if (strcmp(name, s->conn) != 0) {
             snprintf(s->conn, sizeof s->conn, "%s", name);
             push_event(s, TBOX_SESSION_EV_CONNECTION, 0, name);
+        }
+        return;
+    }
+
+    if (is_transfer_update(t)) {
+        char *raw = cJSON_PrintUnformatted(update);
+        if (raw != NULL) {
+            push_event(s, TBOX_SESSION_EV_UPDATE, 0, raw);
+            cJSON_free(raw);
         }
         return;
     }

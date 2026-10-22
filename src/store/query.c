@@ -143,8 +143,40 @@ TBoxDbStatus tbox_query_get(TBoxDb *db, const char *object_id,
     return rc == SQLITE_ROW || rc == SQLITE_DONE ? TBOX_DB_OK : TBOX_DB_E_IO;
 }
 
-/* ---- inbox ----------------------------------------------------------- */
+TBoxDbStatus tbox_query_find_by_name(TBoxDb *db, const char *parent_id,
+                                     const char *name, TBoxListItem *item,
+                                     int *found) {
+    if (db == NULL || parent_id == NULL || name == NULL || item == NULL ||
+        found == NULL) {
+        return TBOX_DB_E_ARGS;
+    }
+    *found = 0;
+    sqlite3 *h = tbox_db_handle(db);
+    if (h == NULL) {
+        return TBOX_DB_E_ARGS;
+    }
+    char sql[512];
+    snprintf(sql, sizeof sql,
+             "%sWHERE o.parent_id=?1 AND o.name=?2 COLLATE NOCASE "
+             "AND o.trashed_at IS NULL LIMIT 1",
+             OBJECT_SELECT);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(h, sql, -1, &st, NULL) != SQLITE_OK) {
+        return TBOX_DB_E_IO;
+    }
+    sqlite3_bind_text(st, 1, parent_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(st, 2, name, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        memset(item, 0, sizeof *item);
+        read_item(st, item);
+        *found = 1;
+    }
+    sqlite3_finalize(st);
+    return rc == SQLITE_ROW || rc == SQLITE_DONE ? TBOX_DB_OK : TBOX_DB_E_IO;
+}
 
+/* ---- inbox ----------------------------------------------------------- */
 /* The spec 7.4 Inbox rule as SQL: unmanaged files whose message id is not
  * some record's `src`. */
 static const char *const INBOX_WHERE =
