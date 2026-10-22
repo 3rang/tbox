@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Tarang Patel
+#
+# Build and test on every push and pull request, on all three desktop OSes.
+# No Telegram account is needed: the unit tests drive a fake TDLib, and the
+# smoke test only checks that the real libtdjson loads and that an
+# unauthenticated run says so.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Smoke test (real libtdjson, no account)
+        shell: bash
+        run: |
+          cmake --install build --config Release --prefix stage
+          ./stage/bin/tbox --version
+          export TBOX_HOME="$RUNNER_TEMP/tbox-home"
+          set +e
+          ./stage/bin/tbox me
+          rc=$?
+          set -e
+          test "$rc" -eq 3 || { echo "expected exit 3 (not logged in), got $rc"; exit 1; }

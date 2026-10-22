@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (c) 2026 Tarang Patel
+#
+# Release: push a tag like v0.2.0 and this builds tbox for every OS/CPU,
+# bundles libtdjson beside it, and publishes the archives on a GitHub
+# Release. Users download one archive, unpack, run ./tbox login.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.rid }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    rid: linux-x64 }
+          - { os: ubuntu-24.04-arm, rid: linux-arm64 }
+          - { os: macos-latest,     rid: osx-arm64 }
+          - { os: macos-15-intel,   rid: osx-x64 }
+          - { os: windows-latest,   rid: win-x64 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version from tag
+        id: ver
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          [ "$GITHUB_REF_TYPE" = "tag" ] || v="0.0.0-$(git rev-parse --short HEAD)"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DTBOX_VERSION=${{ steps.ver.outputs.version }}
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Stage
+        run: cmake --install build --config Release --prefix stage/tbox-${{ steps.ver.outputs.version }}-${{ matrix.rid }}
+
+      - name: Archive (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cd stage
+          tar -czf ../tbox-${{ steps.ver.outputs.version }}-${{ matrix.rid }}.tar.gz *
+
+      - name: Archive (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path stage/* -DestinationPath tbox-${{ steps.ver.outputs.version }}-${{ matrix.rid }}.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tbox-${{ matrix.rid }}
+          path: |
+            tbox-*.tar.gz
+            tbox-*.zip
+          if-no-files-found: error
+
+  publish:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref_type == 'tag'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: archives
+          merge-multiple: true
+
+      - name: Checksums
+        run: |
+          cd archives
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: archives/*
+          generate_release_notes: true
