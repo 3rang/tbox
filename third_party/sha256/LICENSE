@@ -1,0 +1,15 @@
+SHA-256 (sha256.c, sha256.h)
+===========================
+
+Author:    Brad Conte (brad AT bradconte.com)
+Source:    https://github.com/B-Con/crypto-algorithms (sha256.c, sha256.h)
+License:   Public domain. The upstream repository states that the code in
+           it is released into the public domain; the file headers say it
+           is presented "as is" without any guarantees.
+
+The files in this directory are the upstream sources, unchanged. They are
+vendored because the catalog needs the SHA-256 of a file's content
+(spec 8.5) and the project takes no dependency on a TLS library for it.
+
+The implementation is the FIPS 180-4 SHA-256, little endian byte order.
+tests/test_sha256.c checks it against the published test vectors.

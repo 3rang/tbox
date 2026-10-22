@@ -75,6 +75,22 @@ if(MSVC)
   target_compile_options(test_message PRIVATE /W4)
 endif()
 
+# SHA-256 (vendored, public domain) — the content hash of a file (spec 3.2,
+# 7.2). Compiled as its own target so the third-party code is not held to
+# our warning level and the upload/download paths share one hash.
+add_library(tbox_sha256 STATIC third_party/sha256/sha256.c)
+target_include_directories(tbox_sha256 PUBLIC third_party/sha256)
+if(MSVC)
+  target_compile_options(tbox_sha256 PRIVATE /W0)
+endif()
+
+add_executable(test_sha256 tests/test_sha256.c)
+target_link_libraries(test_sha256 PRIVATE tbox_sha256)
+add_test(NAME sha256 COMMAND test_sha256)
+if(MSVC)
+  target_compile_options(test_sha256 PRIVATE /W4)
+endif()
+
 # tbox_util_fsx — filesystem primitives: UTF-8 paths through the Windows
 # W functions (coding rules), recursive mkdir, the spec 9.2 durable
 # replace and the spec 9.3 single-instance engine.lock. No tdjson, so
