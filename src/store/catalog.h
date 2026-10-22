@@ -29,9 +29,18 @@ TBoxDbStatus tbox_cat_rollback(TBoxDb *db);
 /* Inserts or replaces one `messages` row. */
 TBoxDbStatus tbox_cat_upsert_message(TBoxDb *db, const TBoxMessageRow *row);
 
+/* 1 when a `messages` row with this id exists, else 0. */
+int tbox_cat_has_message(TBoxDb *db, const char *message_id);
+
 /* Deletes the messages with these ids (the rows a scan did not see). */
 TBoxDbStatus tbox_cat_delete_messages(TBoxDb *db, const char *const *ids,
                                       size_t count);
+
+/* Points any op that was waiting on `old_id` at `new_id`, the temp-to-real
+ * message id mapping of spec 8.3. A no-op when no op refers to the old id (the
+ * normal case before Phase 2 fills `ops`). */
+TBoxDbStatus tbox_cat_remap_temp_message(TBoxDb *db, const char *old_id,
+                                         const char *new_id);
 
 /* Collects every message_id currently in `messages` into a heap array of heap
  * strings (the scan subtracts the ids it saw to find the stale ones). Free the
@@ -40,6 +49,16 @@ TBoxDbStatus tbox_cat_list_message_ids(TBoxDb *db, char ***ids, size_t *count);
 
 /* Frees an id list from tbox_cat_list_message_ids and zeroes it. */
 void tbox_cat_free_ids(char **ids, size_t count);
+
+/* Loads every `messages` row into a heap array of rows, for re-resolving after
+ * an incremental update (spec 8.3). The array is sized once, so a caller may
+ * hold pointers into it while it builds TBoxResolveMsg views. Free with
+ * tbox_cat_free_messages(). */
+TBoxDbStatus tbox_cat_load_messages(TBoxDb *db, TBoxMessageRow **rows,
+                                    size_t *count);
+
+/* Frees a load from tbox_cat_load_messages (including each row's text). */
+void tbox_cat_free_messages(TBoxMessageRow *rows, size_t count);
 
 /* ---- objects --------------------------------------------------------- */
 

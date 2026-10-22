@@ -239,7 +239,7 @@ endif()
 # tbox_sync — turning a chat into the catalog: the full scan (spec 8.2). It
 # drives a caller-supplied history callback, so tests point it at the fake
 # chat and the engine points it at TDLib. It writes through tbox_store.
-add_library(tbox_sync STATIC src/sync/scan.c)
+add_library(tbox_sync STATIC src/sync/scan.c src/sync/updates.c)
 target_include_directories(tbox_sync PUBLIC src)
 target_link_libraries(tbox_sync PUBLIC tbox_store tbox_catalog cjson)
 if(MSVC)
@@ -251,6 +251,13 @@ target_link_libraries(test_scan PRIVATE tbox_sync tbox_fake_chat tbox_util_fsx)
 add_test(NAME sync_scan COMMAND test_scan)
 if(MSVC)
   target_compile_options(test_scan PRIVATE /W4)
+endif()
+
+add_executable(test_updates tests/test_updates.c)
+target_link_libraries(test_updates PRIVATE tbox_sync tbox_fake_chat tbox_util_fsx)
+add_test(NAME sync_updates COMMAND test_updates)
+if(MSVC)
+  target_compile_options(test_updates PRIVATE /W4)
 endif()
 
 # Vendored TDLib: link the td_json_client C API and stage the DLLs beside

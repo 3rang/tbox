@@ -241,7 +241,7 @@ src/                 C engine (cli/, cmd/, engine/, service/, store/, catalog/, 
   service/           UI-free session: TDLib params, auth FSM, event queue
   store/             index.db: migrations, meta, pragmas, the catalog tables (SQLite)
   catalog/           pure catalog logic: the tbx1 record, resolve, message parsing
-  sync/              turning Saved Messages into the catalog: the full scan
+  sync/              turning Saved Messages into the catalog: scan + updates
   util/              log (redaction), rand, fsx
   td/                the only code touching tdjson native symbols
 tests/               C tests (ctest gate), including the in-memory fake chat
