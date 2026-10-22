@@ -79,6 +79,15 @@ TBoxFsxStatus tbox_fsx_rename(const char *from, const char *to);
  * mid-way `to` keeps its old content and the status is non-zero. */
 TBoxFsxStatus tbox_fsx_replace(const char *from, const char *to);
 
+/* Moves a name to a path that must not be there yet: the destination is
+ * never overwritten (spec 8.6 - a download does not touch a file that is
+ * already there). The bytes are flushed first, like tbox_fsx_replace. */
+TBoxFsxStatus tbox_fsx_rename_no_overwrite(const char *from, const char *to);
+
+/* Copies a file. The destination is replaced if it is there; a copy that
+ * fails leaves the destination as it was. */
+TBoxFsxStatus tbox_fsx_copy(const char *from, const char *to);
+
 /* One engine per profile (spec 9.3): acquires <dir>/engine.lock.
  * Another engine holding it -> TBOX_FSX_E_BUSY (the serve command maps
  * that to PROFILE_BUSY). The lock dies with the process - on Windows

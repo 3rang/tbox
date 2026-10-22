@@ -176,6 +176,59 @@ TBoxDbStatus tbox_query_find_by_name(TBoxDb *db, const char *parent_id,
     return rc == SQLITE_ROW || rc == SQLITE_DONE ? TBOX_DB_OK : TBOX_DB_E_IO;
 }
 
+/* ---- one message ------------------------------------------------------ */
+
+TBoxDbStatus tbox_query_message(TBoxDb *db, const char *message_id,
+                                 TBoxMessageInfo *out, int *found) {
+    if (db == NULL || message_id == NULL || message_id[0] == '\0' ||
+        out == NULL || found == NULL) {
+        return TBOX_DB_E_ARGS;
+    }
+    *found = 0;
+    sqlite3 *h = tbox_db_handle(db);
+    if (h == NULL) {
+        return TBOX_DB_E_ARGS;
+    }
+    /* 0 message_id, 1 kind, 2 file_id, 3 remote_id, 4 mime, 5 size,
+     * 6 orig_name, 7 rec_h, 8 rec_n */
+    static const char *const SQL =
+        "SELECT message_id,kind,file_id,remote_id,mime,size,orig_name,rec_h,"
+        "rec_n FROM messages WHERE message_id=?1";
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(h, SQL, -1, &st, NULL) != SQLITE_OK) {
+        return TBOX_DB_E_IO;
+    }
+    sqlite3_bind_text(st, 1, message_id, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(st);
+    if (rc == SQLITE_ROW) {
+        memset(out, 0, sizeof *out);
+        copy_col(st, 0, out->message_id, sizeof out->message_id);
+        copy_col(st, 1, out->kind, sizeof out->kind);
+        if (sqlite3_column_type(st, 2) != SQLITE_NULL) {
+            out->has_file_id = 1;
+            out->file_id = sqlite3_column_int64(st, 2);
+        }
+        copy_col(st, 3, out->remote_id, sizeof out->remote_id);
+        copy_col(st, 4, out->mime, sizeof out->mime);
+        if (sqlite3_column_type(st, 5) != SQLITE_NULL) {
+            out->has_size = 1;
+            out->size = sqlite3_column_int64(st, 5);
+        }
+        copy_col(st, 6, out->orig_name, sizeof out->orig_name);
+        if (sqlite3_column_type(st, 7) != SQLITE_NULL) {
+            out->has_sha256 = 1;
+            copy_col(st, 7, out->sha256, sizeof out->sha256);
+        }
+        if (sqlite3_column_type(st, 8) != SQLITE_NULL) {
+            out->has_name = 1;
+            copy_col(st, 8, out->name, sizeof out->name);
+        }
+        *found = 1;
+    }
+    sqlite3_finalize(st);
+    return rc == SQLITE_ROW || rc == SQLITE_DONE ? TBOX_DB_OK : TBOX_DB_E_IO;
+}
+
 /* ---- inbox ----------------------------------------------------------- */
 /* The spec 7.4 Inbox rule as SQL: unmanaged files whose message id is not
  * some record's `src`. */

@@ -316,15 +316,26 @@ static cJSON *content_json(const FakeMsg *m) {
 
     cJSON *item = cJSON_CreateObject();
     if (item != NULL) {
-        /* photos wrap their file; the others carry it directly */
         if (strcmp(m->kind, "photo") == 0) {
+            /* TDLib 1.8.67: photo has sizes[], no direct 'photo' field */
             cJSON_AddStringToObject(item, "@type", "photo");
             cJSON *f = file_json(&m->file);
             if (f != NULL) {
-                cJSON_AddItemToObject(item, "sizes", cJSON_CreateArray());
-                cJSON_AddItemToObject(item, "photo", f);
+                cJSON *sizes = cJSON_CreateArray();
+                if (sizes != NULL) {
+                    cJSON *sz = cJSON_CreateObject();
+                    if (sz != NULL) {
+                        cJSON_AddStringToObject(sz, "@type", "photoSize");
+                        cJSON_AddStringToObject(sz, "type", "x");
+                        cJSON_AddItemToObject(sz, "photo", f);
+                        cJSON_AddItemToArray(sizes, sz);
+                    }
+                    cJSON_AddItemToObject(item, "sizes", sizes);
+                }
             }
         } else {
+            /* document, video, audio, voice_note: the file is nested one level
+             * deeper (content.document.document, content.video.video, etc.) */
             cJSON_AddStringToObject(item, "@type", m->kind);
             if (m->file.name != NULL) {
                 cJSON_AddStringToObject(item, "file_name", m->file.name);

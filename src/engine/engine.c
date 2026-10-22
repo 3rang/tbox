@@ -29,6 +29,7 @@
 #include "sync/updates.h"
 #include "util/fsx.h"
 #include "util/log.h"
+#include "xfer/download.h"
 #include "xfer/ops.h"
 #include "xfer/upload.h"
 
@@ -97,6 +98,22 @@ struct TBoxEngine {
     char *upload_path;         /* the file being sent (heap) */
     long long upload_size;
     long long upload_mtime;
+
+    /* the downloads in flight (spec 8.6: two at a time) */
+    struct {
+        int       used;
+        char      op_id[TBOX_OP_HEX_LEN + 1];
+        char      file_id[TBOX_MSGID_MAX_BYTES + 1];
+        char      name[TBOX_NAME_MAX_BYTES + 1];
+        char      dest_dir[TBOX_DOWNLOAD_PATH_MAX];
+        char      on_exists[16];
+        char      sha256[TBOX_SHA256_HEX_LEN + 1];
+        int       has_sha256;
+        long long size;
+        int       has_size;
+    } downloads[2];
+    int download_pending;       /* the loop has a download to pick up */
+    long long download_next_at; /* the earliest time a waiting op may run */
 
     /* command queue: stdin thread writes, loop thread reads */
     EngineCmd *qhead;
@@ -436,6 +453,7 @@ static void engine_recover_ops(TBoxEngine *e) {
      * the last run has to be picked up now, not after the next command
      * happens to come in. */
     e->upload_pending = 1;
+    e->download_pending = 1;
     char detail[160];
     snprintf(detail, sizeof detail,
              "%d open operation(s): %d already done, %d back in the queue",
@@ -863,7 +881,7 @@ static void cmd_catalog_summary(TBoxEngine *e, const TBoxProtoRequest *req) {
 /* ---- uploads (spec 8.5) ----------------------------------------------- */
 
 /* The upload's way of talking to TDLib: one request, one reply. */
-static cJSON *engine_upload_call(void *ctx, const char *request) {
+static cJSON *engine_td_call(void *ctx, const char *request) {
     TBoxEngine *e = ctx;
     return engine_call(e, request, TBOX_ENGINE_CALL_TIMEOUT_MS);
 }
@@ -872,7 +890,7 @@ static cJSON *engine_upload_call(void *ctx, const char *request) {
 static void engine_upload_env(TBoxEngine *e, TBoxUploadEnv *env) {
     memset(env, 0, sizeof *env);
     env->db = e->db;
-    env->call = engine_upload_call;
+    env->call = engine_td_call;
     env->call_ctx = e;
     env->chat_id = e->saved_chat;
     env->caption_limit = (unsigned)e->caption_limit;
@@ -1252,6 +1270,8 @@ static void engine_upload_failed(TBoxEngine *e, const cJSON *update) {
 }
 
 /* The updates that are about a transfer (spec 8.5). */
+static void engine_download_progress(TBoxEngine *e, const cJSON *update);
+
 static void engine_transfer_update(TBoxEngine *e, const char *update_json) {
     if (update_json == NULL) {
         return;
@@ -1265,6 +1285,7 @@ static void engine_transfer_update(TBoxEngine *e, const char *update_json) {
     const char *t = cJSON_IsString(type) ? cJSON_GetStringValue(type) : "";
     if (strcmp(t, "updateFile") == 0) {
         engine_upload_progress(e, update);
+        engine_download_progress(e, update);
     } else if (strcmp(t, "updateMessageSendSucceeded") == 0) {
         engine_upload_succeeded(e, update);
     } else if (strcmp(t, "updateMessageSendFailed") == 0) {
@@ -1346,6 +1367,460 @@ static void cmd_file_upload(TBoxEngine *e, const TBoxProtoRequest *req) {
     e->upload_pending = 1;
 }
 
+/* ---- the download (spec 8.6) ------------------------------------------ */
+
+/* The world the download module works in. */
+static void engine_download_env(TBoxEngine *e, TBoxDownloadEnv *env) {
+    memset(env, 0, sizeof *env);
+    env->db = e->db;
+    env->call = engine_td_call;
+    env->call_ctx = e;
+    env->now = (long long)time(NULL);
+}
+
+/* The error the protocol shows for a failed download. */
+static TBoxProtoError engine_download_error(TBoxDownloadStatus status) {
+    switch (status) {
+    case TBOX_DOWNLOAD_E_ARGS:
+        return TBOX_PROTO_ERR_BAD_ARGS;
+    case TBOX_DOWNLOAD_E_NOT_FOUND:
+        return TBOX_PROTO_ERR_NOT_FOUND;
+    case TBOX_DOWNLOAD_E_NAME:
+        return TBOX_PROTO_ERR_NAME_INVALID;
+    case TBOX_DOWNLOAD_E_EXISTS:
+        return TBOX_PROTO_ERR_NAME_EXISTS;
+    case TBOX_DOWNLOAD_E_IO:
+    case TBOX_DOWNLOAD_E_HASH:
+    case TBOX_DOWNLOAD_E_SIZE:
+        return TBOX_PROTO_ERR_IO;
+    case TBOX_DOWNLOAD_E_DB:
+        return TBOX_PROTO_ERR_DB;
+    case TBOX_DOWNLOAD_E_TD:
+        return TBOX_PROTO_ERR_TD;
+    default:
+        return TBOX_PROTO_ERR_INTERNAL;
+    }
+}
+
+/* True when a failure is worth trying again: the network was busy or the
+ * disk said no for a moment. A file that is not the one that was sent, or a
+ * name that is taken, will not change by trying again. */
+static int engine_download_worth_retrying(TBoxDownloadStatus status) {
+    return status == TBOX_DOWNLOAD_E_TD || status == TBOX_DOWNLOAD_E_IO;
+}
+
+/* A download that did not work out. The operation waits and tries again, or
+ * gives up (spec 8.4: 5 s, 30 s, 2 min, 10 min). */
+static void engine_fail_download(TBoxEngine *e, const char *op_id,
+                                 TBoxProtoError code, const char *message,
+                                 int retry) {
+    if (e->db == NULL || op_id == NULL || op_id[0] == '\0') {
+        return;
+    }
+    long long now = (long long)time(NULL);
+    int attempts = 0;
+    (void)tbox_journal_bump_attempts(e->db, op_id, now, &attempts);
+    int wait = retry ? tbox_op_backoff_seconds(attempts) : -1;
+    const char *state = wait < 0 ? "FAILED" : "RETRY_WAIT";
+    long long next_try_at = wait < 0 ? 0 : now + wait;
+    (void)tbox_journal_set_state(e->db, op_id, state,
+                                 tbox_proto_error_code(code), next_try_at, now);
+    engine_emit_transfer_failed(e, op_id, code, message);
+    tbox_log_write(e->log, TBOX_LOG_WARN, "xfer", op_id, message, NULL);
+    e->download_pending = 1;
+    e->download_next_at = wait < 0 ? 0 : next_try_at;
+}
+
+/* A free slot for a download, or -1 when both are on their way (spec 8.6:
+ * two at a time). */
+static int engine_download_slot(TBoxEngine *e) {
+    for (size_t i = 0; i < sizeof e->downloads / sizeof e->downloads[0]; i++) {
+        if (!e->downloads[i].used) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/* True when a download of the same name into the same folder is already on
+ * its way: the two would share the temporary file the copy lands on. */
+static int engine_download_name_taken(TBoxEngine *e, const char *dest_dir,
+                                       const char *name) {
+    for (size_t i = 0; i < sizeof e->downloads / sizeof e->downloads[0]; i++) {
+        if (!e->downloads[i].used) {
+            continue;
+        }
+        if (strcmp(e->downloads[i].dest_dir, dest_dir) != 0) {
+            continue;
+        }
+        /* the names are compared the way Windows compares them */
+        const char *a = e->downloads[i].name;
+        const char *b = name;
+        int same = 1;
+        while (*a != '\0' && *b != '\0') {
+            char ca = *a;
+            char cb = *b;
+            if (ca >= 'A' && ca <= 'Z') {
+                ca = (char)(ca - 'A' + 'a');
+            }
+            if (cb >= 'A' && cb <= 'Z') {
+                cb = (char)(cb - 'A' + 'a');
+            }
+            if (ca != cb) {
+                same = 0;
+                break;
+            }
+            a++;
+            b++;
+        }
+        if (same && *a == '\0' && *b == '\0') {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* The last step of a download (spec 8.6 step 4): the file is copied, checked
+ * and given its name. */
+static void engine_finish_download(TBoxEngine *e, const char *op_id,
+                                   const TBoxDownloadChecked *checked,
+                                   const TBoxDownloadPlan *plan) {
+    char path[TBOX_DOWNLOAD_PATH_MAX];
+    char err[256];
+    err[0] = '\0';
+    TBoxDownloadStatus st =
+        tbox_download_finish(checked, plan, path, sizeof path, err, sizeof err);
+    if (st != TBOX_DOWNLOAD_OK) {
+        engine_fail_download(e, op_id, engine_download_error(st), err,
+                             engine_download_worth_retrying(st));
+        return;
+    }
+    long long now = (long long)time(NULL);
+    if (tbox_journal_set_state(e->db, op_id, "DONE", NULL, 0, now) ==
+        TBOX_DB_OK) {
+        cJSON *d = cJSON_CreateObject();
+        if (d != NULL) {
+            cJSON_AddStringToObject(d, "op_id", op_id);
+            cJSON_AddStringToObject(d, "path", path);
+            emit_event(e, "transfer.done", d);
+            cJSON_Delete(d);
+        }
+    }
+    tbox_log_write(e->log, TBOX_LOG_INFO, "xfer", op_id, "the file is in place",
+                   NULL);
+    e->download_pending = 1;
+}
+
+/* Starts one download: Telegram is asked for the file (spec 8.6 step 2). */
+static void engine_start_download(TBoxEngine *e, const char *op_id,
+                                  const char *args_json) {
+    long long now = (long long)time(NULL);
+    TBoxDownloadArgs args;
+    if (!tbox_download_args_parse(args_json, &args)) {
+        engine_fail_download(e, op_id, TBOX_PROTO_ERR_INTERNAL,
+                             "the operation has no usable arguments", 0);
+        return;
+    }
+    /* the operation is on its way now: from here on a failure waits and
+     * tries again (spec 8.4) */
+    if (tbox_journal_set_state(e->db, op_id, "RUNNING", NULL, 0, now) !=
+        TBOX_DB_OK) {
+        tbox_download_args_free(&args);
+        engine_fail_download(e, op_id, TBOX_PROTO_ERR_INTERNAL,
+                             "the operation could not be written down", 0);
+        return;
+    }
+
+    TBoxDownloadChecked checked;
+    memset(&checked, 0, sizeof checked);
+    snprintf(checked.message_id, sizeof checked.message_id, "%s",
+             args.message_id != NULL ? args.message_id : "");
+    snprintf(checked.name, sizeof checked.name, "%s",
+             args.name != NULL ? args.name : "");
+    snprintf(checked.dest_dir, sizeof checked.dest_dir, "%s",
+             args.dest_dir != NULL ? args.dest_dir : "");
+    snprintf(checked.on_exists, sizeof checked.on_exists, "%s",
+             args.on_exists != NULL ? args.on_exists : "error");
+    if (args.sha256 != NULL && args.sha256[0] != '\0') {
+        checked.has_sha256 = 1;
+        snprintf(checked.sha256, sizeof checked.sha256, "%s", args.sha256);
+    }
+    if (args.size >= 0) {
+        checked.has_size = 1;
+        checked.size = args.size;
+    }
+
+    TBoxDownloadEnv env;
+    engine_download_env(e, &env);
+    char err[256];
+    err[0] = '\0';
+    TBoxDownloadPlan plan;
+    TBoxDownloadStatus st = tbox_download_start(&env, op_id, &checked, &plan,
+                                                 err, sizeof err);
+    tbox_download_args_free(&args);
+    if (st != TBOX_DOWNLOAD_OK) {
+        engine_fail_download(e, op_id, engine_download_error(st), err,
+                             engine_download_worth_retrying(st));
+        return;
+    }
+    if (plan.complete) {
+        /* the file was already on this disk: the copy and the check happen
+         * right away */
+        engine_finish_download(e, op_id, &checked, &plan);
+        return;
+    }
+
+    int slot = engine_download_slot(e);
+    if (slot < 0) {
+        engine_fail_download(e, op_id, TBOX_PROTO_ERR_INTERNAL,
+                             "there is no room for another download", 0);
+        return;
+    }
+    /* remember the flight: the progress comes with the id of the file */
+    e->downloads[slot].used = 1;
+    snprintf(e->downloads[slot].op_id, sizeof e->downloads[slot].op_id, "%s",
+             op_id);
+    snprintf(e->downloads[slot].file_id, sizeof e->downloads[slot].file_id, "%s",
+             plan.file_id);
+    snprintf(e->downloads[slot].name, sizeof e->downloads[slot].name, "%s",
+             checked.name);
+    snprintf(e->downloads[slot].dest_dir, sizeof e->downloads[slot].dest_dir,
+             "%s", checked.dest_dir);
+    snprintf(e->downloads[slot].on_exists, sizeof e->downloads[slot].on_exists,
+             "%s", checked.on_exists);
+    e->downloads[slot].has_sha256 = checked.has_sha256;
+    snprintf(e->downloads[slot].sha256, sizeof e->downloads[slot].sha256, "%s",
+             checked.sha256);
+    e->downloads[slot].has_size = checked.has_size;
+    e->downloads[slot].size = checked.size;
+    tbox_log_write(e->log, TBOX_LOG_INFO, "xfer", op_id, "the file is on its way",
+                   NULL);
+}
+
+/* Starts the downloads that are next in the queue (spec 8.6: two at a time).
+ * The queue is the journal itself, so an operation that was left over from
+ * a crash is picked up as well. */
+static void engine_run_downloads(TBoxEngine *e) {
+    if (e->db == NULL || e->session == NULL) {
+        return;
+    }
+    if (!e->download_pending) {
+        return;
+    }
+    long long now = (long long)time(NULL);
+    if (now < e->download_next_at) {
+        return;
+    }
+    e->download_pending = 0;
+    if (engine_download_slot(e) < 0) {
+        return; /* two are already on their way (spec 8.6) */
+    }
+    if (engine_cooldown_left(e) > 0) {
+        /* spec 9.1: Telegram asked us to slow down, and a flood wait
+         * overrides the retry delay. */
+        e->download_pending = 1;
+        return;
+    }
+
+    TBoxOpRow *rows = NULL;
+    size_t count = 0;
+    if (tbox_journal_list_active(e->db, &rows, &count) != TBOX_DB_OK) {
+        return;
+    }
+    char op_id[TBOX_OP_HEX_LEN + 1];
+    char *args_json = NULL;
+    long long next_at = 0;
+    op_id[0] = '\0';
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(rows[i].kind, TBOX_OP_KIND_DOWNLOAD) != 0) {
+            continue;
+        }
+        if (strcmp(rows[i].state, "QUEUED") != 0 &&
+            strcmp(rows[i].state, "RETRY_WAIT") != 0) {
+            continue;
+        }
+        if (rows[i].next_try_at > now) {
+            if (next_at == 0 || rows[i].next_try_at < next_at) {
+                next_at = rows[i].next_try_at;
+            }
+            continue;
+        }
+        snprintf(op_id, sizeof op_id, "%s", rows[i].op_id);
+        if (rows[i].args_json != NULL) {
+            args_json = TBOX_STRDUP(rows[i].args_json);
+        }
+        break;
+    }
+    tbox_journal_free_rows(rows, count);
+
+    if (op_id[0] == '\0') {
+        /* nothing to do now: wake up when the earliest waiting op is due */
+        e->download_next_at = next_at;
+        return;
+    }
+    /* two downloads of the same name into the same folder would share the
+     * temporary file the copy lands on, so only one of them goes */
+    TBoxDownloadArgs args;
+    int busy = 0;
+    if (tbox_download_args_parse(args_json, &args)) {
+        busy = engine_download_name_taken(e, args.dest_dir, args.name);
+        tbox_download_args_free(&args);
+    }
+    if (busy) {
+        free(args_json);
+        e->download_pending = 1;
+        return;
+    }
+    engine_start_download(e, op_id, args_json);
+    free(args_json);
+}
+
+/* updateFile: the progress of a file that is coming down (spec 8.6 step 3),
+ * and the moment it is there. */
+static void engine_download_progress(TBoxEngine *e, const cJSON *update) {
+    const cJSON *file = cJSON_GetObjectItemCaseSensitive(update, "file");
+    const cJSON *id = cJSON_GetObjectItemCaseSensitive(file, "id");
+    if (!cJSON_IsNumber(id)) {
+        return;
+    }
+    char file_id[TBOX_MSGID_MAX_BYTES + 1];
+    snprintf(file_id, sizeof file_id, "%lld", (long long)id->valuedouble);
+
+    for (size_t i = 0; i < sizeof e->downloads / sizeof e->downloads[0]; i++) {
+        if (!e->downloads[i].used ||
+            strcmp(e->downloads[i].file_id, file_id) != 0) {
+            continue;
+        }
+        const cJSON *local = cJSON_GetObjectItemCaseSensitive(file, "local");
+        const cJSON *done =
+            cJSON_GetObjectItemCaseSensitive(local, "downloaded_size");
+        const cJSON *size = cJSON_GetObjectItemCaseSensitive(file, "size");
+        long long total = cJSON_IsNumber(size) ? (long long)size->valuedouble
+                                              : e->downloads[i].size;
+        cJSON *d = cJSON_CreateObject();
+        if (d != NULL) {
+            cJSON_AddStringToObject(d, "op_id", e->downloads[i].op_id);
+            cJSON_AddNumberToObject(d, "done",
+                                    (double)(cJSON_IsNumber(done)
+                                                 ? (long long)done->valuedouble
+                                                 : 0));
+            cJSON_AddNumberToObject(d, "total", (double)total);
+            emit_event(e, "transfer.progress", d);
+            cJSON_Delete(d);
+        }
+
+        /* is it there? */
+        const cJSON *ready =
+            cJSON_GetObjectItemCaseSensitive(local, "is_downloading_completed");
+        const cJSON *path = cJSON_GetObjectItemCaseSensitive(local, "path");
+        if (!cJSON_IsTrue(ready) || !cJSON_IsString(path) ||
+            cJSON_GetStringValue(path) == NULL) {
+            return;
+        }
+        char op_id[TBOX_OP_HEX_LEN + 1];
+        snprintf(op_id, sizeof op_id, "%s", e->downloads[i].op_id);
+        TBoxDownloadChecked checked;
+        TBoxDownloadPlan plan;
+        memset(&checked, 0, sizeof checked);
+        memset(&plan, 0, sizeof plan);
+        snprintf(checked.name, sizeof checked.name, "%s", e->downloads[i].name);
+        snprintf(checked.dest_dir, sizeof checked.dest_dir, "%s",
+                 e->downloads[i].dest_dir);
+        snprintf(checked.on_exists, sizeof checked.on_exists, "%s",
+                 e->downloads[i].on_exists);
+        checked.has_sha256 = e->downloads[i].has_sha256;
+        snprintf(checked.sha256, sizeof checked.sha256, "%s",
+                 e->downloads[i].sha256);
+        checked.has_size = e->downloads[i].has_size;
+        checked.size = e->downloads[i].size;
+        snprintf(plan.op_id, sizeof plan.op_id, "%s", op_id);
+        snprintf(plan.local_path, sizeof plan.local_path, "%s",
+                 cJSON_GetStringValue(path));
+        plan.has_sha256 = checked.has_sha256;
+        snprintf(plan.sha256, sizeof plan.sha256, "%s", checked.sha256);
+        plan.has_size = checked.has_size;
+        plan.size = checked.size;
+        plan.complete = 1;
+        /* the slot is free again: the next one may start */
+        e->downloads[i].used = 0;
+        engine_finish_download(e, op_id, &checked, &plan);
+        return;
+    }
+}
+
+/* file.download: the file comes back to a folder the user picked (spec 8.6).
+ * The answer goes out first, with the operation id; the download follows,
+ * two at a time (spec 6.2). */
+static void cmd_file_download(TBoxEngine *e, const TBoxProtoRequest *req) {
+    if (!e->ready || e->session == NULL) {
+        respond_err(e, req->id, TBOX_PROTO_ERR_NOT_AUTHORIZED,
+                    "the session is not authorized yet");
+        return;
+    }
+    const char *object_id = tbox_proto_arg_str(req->args, "object_id");
+    const char *message_id = tbox_proto_arg_str(req->args, "message_id");
+    const char *dest_dir = tbox_proto_arg_str(req->args, "dest_dir");
+    const char *on_exists = tbox_proto_arg_str(req->args, "on_exists");
+    if (dest_dir == NULL || dest_dir[0] == '\0') {
+        respond_err(e, req->id, TBOX_PROTO_ERR_BAD_ARGS,
+                    "file.download requires args.dest_dir");
+        return;
+    }
+    if ((object_id == NULL || object_id[0] == '\0') &&
+        (message_id == NULL || message_id[0] == '\0')) {
+        respond_err(e, req->id, TBOX_PROTO_ERR_BAD_ARGS,
+                    "file.download requires args.object_id or args.message_id");
+        return;
+    }
+    if (on_exists != NULL && on_exists[0] != '\0' &&
+        strcmp(on_exists, "error") != 0 &&
+        strcmp(on_exists, "keep_both") != 0) {
+        respond_err(e, req->id, TBOX_PROTO_ERR_BAD_ARGS,
+                    "on_exists must be \"error\" or \"keep_both\"");
+        return;
+    }
+    int left = engine_cooldown_left(e);
+    if (left > 0) {
+        respond_err_wait(e, req->id, "Telegram asked us to slow down", left);
+        return;
+    }
+
+    TBoxDownloadEnv env;
+    engine_download_env(e, &env);
+    TBoxDownloadRequest dreq;
+    memset(&dreq, 0, sizeof dreq);
+    dreq.object_id = object_id;
+    dreq.message_id = message_id;
+    dreq.dest_dir = dest_dir;
+    dreq.on_exists = on_exists;
+
+    char err[256];
+    err[0] = '\0';
+    TBoxDownloadChecked checked;
+    TBoxDownloadStatus st =
+        tbox_download_check(&env, &dreq, &checked, err, sizeof err);
+    if (st != TBOX_DOWNLOAD_OK) {
+        respond_err(e, req->id, engine_download_error(st), err);
+        return;
+    }
+    TBoxDownloadOp op;
+    st = tbox_download_queue(&env, &dreq, &checked, &op, err, sizeof err);
+    if (st != TBOX_DOWNLOAD_OK) {
+        respond_err(e, req->id, engine_download_error(st), err);
+        return;
+    }
+    cJSON *r = cJSON_CreateObject();
+    if (r == NULL) {
+        respond_err(e, req->id, TBOX_PROTO_ERR_INTERNAL, "out of memory");
+        return;
+    }
+    cJSON_AddStringToObject(r, "op_id", op.op_id);
+    respond_ok(e, req->id, r);
+    cJSON_Delete(r);
+    /* the engine fetches it when it is its turn */
+    e->download_pending = 1;
+}
+
 /* Dispatch table. Returning 0 means "not a known command". */
 static void dispatch(TBoxEngine *e, const TBoxProtoRequest *req) {
     if (strcmp(req->cmd, "hello") == 0) {
@@ -1370,6 +1845,8 @@ static void dispatch(TBoxEngine *e, const TBoxProtoRequest *req) {
         cmd_catalog_summary(e, req);
     } else if (strcmp(req->cmd, "file.upload") == 0) {
         cmd_file_upload(e, req);
+    } else if (strcmp(req->cmd, "file.download") == 0) {
+        cmd_file_download(e, req);
     } else {
         respond_err(e, req->id, TBOX_PROTO_ERR_UNKNOWN_CMD,
                     "unknown command");
@@ -1615,6 +2092,8 @@ int tbox_engine_run(TBoxEngine *e) {
         drain_session(e);
         /* spec 8.5: the uploads go one at a time. */
         engine_run_uploads(e);
+        /* spec 8.6: the downloads go two at a time. */
+        engine_run_downloads(e);
         if (e->session != NULL && tbox_session_resync_needed(e->session) &&
             !e->resync_done) {
             e->resync_done = 1;

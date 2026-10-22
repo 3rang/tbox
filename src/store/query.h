@@ -67,6 +67,25 @@ typedef struct TBoxRevision {
     long long trashed_at;
 } TBoxRevision;
 
+/* What the messages table knows about one message. A download needs this:
+ * which file to fetch, how big it should be and what it should hash to
+ * (spec 8.6). */
+typedef struct TBoxMessageInfo {
+    char      message_id[TBOX_MSGID_MAX_BYTES + 1];
+    char      kind[16];
+    int       has_file_id;
+    long long file_id;
+    char      remote_id[128];
+    char      mime[96];
+    int       has_size;
+    long long size;
+    char      orig_name[TBOX_NAME_MAX_BYTES * 4 + 1];
+    int       has_sha256;
+    char      sha256[TBOX_SHA256_HEX_LEN + 1];
+    int       has_name;
+    char      name[TBOX_NAME_MAX_BYTES + 1]; /* the name of the record */
+} TBoxMessageInfo;
+
 /* Recursive totals for one top-level folder. */
 typedef struct TBoxFolderTotal {
     char      folder_id[TBOX_RESOLVE_ID_MAX + 1];
@@ -115,6 +134,11 @@ TBoxDbStatus tbox_query_get(TBoxDb *db, const char *object_id,
 TBoxDbStatus tbox_query_find_by_name(TBoxDb *db, const char *parent_id,
                                      const char *name, TBoxListItem *item,
                                      int *found);
+
+/* Reads one message row. Returns TBOX_DB_OK and sets *found; *out is
+ * untouched when there is no such message. */
+TBoxDbStatus tbox_query_message(TBoxDb *db, const char *message_id,
+                                 TBoxMessageInfo *out, int *found);
 
 /* Lists the Inbox in newest-first order. Free with tbox_query_free_inbox(). */
 TBoxDbStatus tbox_query_inbox(TBoxDb *db, TBoxInboxRow **items,

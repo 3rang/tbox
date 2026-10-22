@@ -311,6 +311,88 @@ TBoxFsxStatus tbox_fsx_replace(const char *from, const char *to) {
 #endif
 }
 
+/* ---- copying ----------------------------------------------------------- */
+
+TBoxFsxStatus tbox_fsx_copy(const char *from, const char *to) {
+    if (from == NULL || from[0] == '\0' || to == NULL || to[0] == '\0') {
+        return TBOX_FSX_E_ARGS;
+    }
+    TBoxFsxFile *in = NULL;
+    if (tbox_fsx_open_read(from, &in) != TBOX_FSX_OK) {
+        return TBOX_FSX_E_IO;
+    }
+    FILE *out = tbox_fsx_fopen(to, "wb");
+    if (out == NULL) {
+        tbox_fsx_close_read(in);
+        return TBOX_FSX_E_IO;
+    }
+    char buf[65536];
+    TBoxFsxStatus st = TBOX_FSX_OK;
+    for (;;) {
+        size_t got = 0;
+        if (tbox_fsx_read(in, buf, sizeof buf, &got) != TBOX_FSX_OK) {
+            st = TBOX_FSX_E_IO;
+            break;
+        }
+        if (got == 0) {
+            break; /* the end of the file */
+        }
+        if (fwrite(buf, 1, got, out) != got) {
+            st = TBOX_FSX_E_IO;
+            break;
+        }
+    }
+    if (fflush(out) != 0) {
+        st = TBOX_FSX_E_IO;
+    }
+    (void)fclose(out);
+    tbox_fsx_close_read(in);
+    if (st != TBOX_FSX_OK) {
+        /* a half-written copy is worse than none: it goes away */
+        (void)tbox_fsx_remove(to);
+    }
+    return st;
+}
+
+TBoxFsxStatus tbox_fsx_rename_no_overwrite(const char *from, const char *to) {
+    if (from == NULL || from[0] == '\0' || to == NULL || to[0] == '\0') {
+        return TBOX_FSX_E_ARGS;
+    }
+#ifdef _WIN32
+    wchar_t wf[TBOX_FSX_WIDE];
+    wchar_t wt[TBOX_FSX_WIDE];
+    if (fsx_wide(from, wf, TBOX_FSX_WIDE) != 0 ||
+        fsx_wide(to, wt, TBOX_FSX_WIDE) != 0) {
+        return TBOX_FSX_E_IO;
+    }
+    /* Without MOVEFILE_REPLACE_EXISTING Windows refuses an existing
+     * destination, which is exactly what a download needs. */
+    return MoveFileExW(wf, wt, MOVEFILE_WRITE_THROUGH) ? TBOX_FSX_OK
+                                                       : TBOX_FSX_E_IO;
+#else
+    /* POSIX rename() replaces the destination, so the name is taken with
+     * link() first: that fails when the destination is there. The bytes are
+     * flushed before, like spec 9.2 wants. */
+    int fd = open(from, O_RDONLY);
+    if (fd < 0) {
+        return TBOX_FSX_E_IO;
+    }
+    int r = fsync(fd);
+    (void)close(fd);
+    if (r != 0) {
+        return TBOX_FSX_E_IO;
+    }
+    if (link(from, to) != 0) {
+        return TBOX_FSX_E_IO;
+    }
+    if (unlink(from) != 0) {
+        (void)unlink(to);
+        return TBOX_FSX_E_IO;
+    }
+    return TBOX_FSX_OK;
+#endif
+}
+
 /* ---- the single-instance lock (spec 9.3) ------------------------------ */
 
 struct TBoxFsxLock {

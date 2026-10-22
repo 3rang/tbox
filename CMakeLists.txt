@@ -54,11 +54,13 @@ if(MSVC)
   target_compile_options(tbox_xfer PRIVATE /W4)
 endif()
 
-# tbox_transfer — the transfers themselves: the content hash of a file and
-# the upload of a local file into Saved Messages (spec 8.5). It reads and
-# writes through tbox_store (the catalog and the ops journal), so it sits
-# above the store and the pure state machine.
-add_library(tbox_transfer STATIC src/xfer/hash.c src/xfer/upload.c)
+# tbox_transfer — the transfers themselves: the content hash of a file, the
+# upload of a local file into Saved Messages (spec 8.5) and the download of
+# a file back out of it (spec 8.6). It reads and writes through tbox_store
+# (the catalog and the ops journal), so it sits above the store and the pure
+# state machine.
+add_library(tbox_transfer STATIC src/xfer/hash.c src/xfer/upload.c
+                                 src/xfer/download.c)
 target_include_directories(tbox_transfer PUBLIC src)
 target_link_libraries(tbox_transfer PUBLIC tbox_store tbox_xfer tbox_catalog
                                       tbox_util_fsx tbox_util_rand tbox_sha256
@@ -307,6 +309,25 @@ target_link_libraries(test_engine_upload PRIVATE tbox_engine tbox_fake_chat)
 add_test(NAME engine_upload COMMAND test_engine_upload)
 if(MSVC)
   target_compile_options(test_engine_upload PRIVATE /W4)
+endif()
+
+# The download (spec 8.6): the checks, the name a file gets when the one the
+# user wants is taken, the copy and the check against the size and the hash.
+add_executable(test_download tests/test_download.c)
+target_link_libraries(test_download PRIVATE tbox_transfer tbox_store tbox_util_fsx)
+add_test(NAME xfer_download COMMAND test_download)
+if(MSVC)
+  target_compile_options(test_download PRIVATE /W4)
+endif()
+
+# The download over the whole engine: the command, the operation in the
+# journal, the request for the file, the copy that lands and the events that
+# go with it - against the fake TDLib, without a dll and without a network.
+add_executable(test_engine_download tests/test_engine_download.c)
+target_link_libraries(test_engine_download PRIVATE tbox_engine tbox_fake_chat)
+add_test(NAME engine_download COMMAND test_engine_download)
+if(MSVC)
+  target_compile_options(test_engine_download PRIVATE /W4)
 endif()
 
 # The in-memory Saved Messages chat the sync tests drive. It is a test-only
