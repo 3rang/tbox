@@ -22,6 +22,7 @@ static const struct {
     { "search", cmd_search, "search <query>", "find chats by title or public @username" },
     { "send", cmd_send, "send <chat> <text...>", "send a text message" },
     { "read", cmd_read, "read <chat> [-n COUNT]", "print the last messages (default 20)" },
+    { "upload", cmd_upload, "upload <chat> <file> [caption...]", "send a file" },
 };
 
 static void usage(FILE *out) {
