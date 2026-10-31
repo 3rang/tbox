@@ -5,8 +5,7 @@
  *
  *   me / saved            your Saved Messages
  *   @name, t.me/name      a public username (user, group or channel)
- *   123456, -100123456    a chat id as TDLib prints it
- *   anything else         searched in the title of chats you are in
+ *   123456, -100123456    a chat id, as `tbox watch` prints it
  */
 #ifndef TBOX_CHAT_H
 #define TBOX_CHAT_H
@@ -20,26 +19,19 @@ typedef enum ChatRefKind {
     CHAT_REF_ME,
     CHAT_REF_ID,
     CHAT_REF_USERNAME,
-    CHAT_REF_NAME,
 } ChatRefKind;
 
 typedef struct ChatRef {
     ChatRefKind kind;
     long long id;        /* CHAT_REF_ID */
-    char text[256];      /* username without '@', or the name to search */
+    char text[256];      /* CHAT_REF_USERNAME, without the '@' */
 } ChatRef;
 
-/* Classify a reference. Pure. Returns -1 for an empty string. */
+/* Classify a reference. Pure. Returns -1 if it is none of the forms. */
 int chat_ref_parse(const char *s, ChatRef *out);
 
 /* Resolve to a chat id, or 0 with err filled. */
 long long chat_resolve(Td *td, const char *ref, char *err, size_t errlen);
-
-/* "private", "group", "supergroup", "channel", "secret" or "?". Pure. */
-const char *chat_type_name(const cJSON *chat);
-
-/* One line "id  type  title  @username" describing a chat object. */
-void chat_describe(Td *td, const cJSON *chat, char *buf, size_t n);
 
 /* Display name of a user object: "First Last". Pure. */
 void chat_user_name(const cJSON *user, char *buf, size_t n);

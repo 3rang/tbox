@@ -18,10 +18,7 @@ static const struct {
 } COMMANDS[] = {
     { "login", cmd_login, "login [--api-id ID --api-hash HASH]", "sign in (once); asks for phone, code, password" },
     { "logout", cmd_logout, "logout", "sign out and forget the session" },
-    { "me", cmd_me, "me", "show the logged-in account" },
-    { "search", cmd_search, "search <query>", "find chats by title or public @username" },
     { "send", cmd_send, "send <chat> <text...>", "send a text message" },
-    { "read", cmd_read, "read <chat> [-n COUNT]", "print the last messages (default 20)" },
     { "upload", cmd_upload, "upload <chat> <file> [caption...]", "send a file" },
 };
 
@@ -32,7 +29,7 @@ static void usage(FILE *out) {
         fprintf(out, "  %-38s %s\n", COMMANDS[i].usage, COMMANDS[i].help);
     }
     fprintf(out,
-            "\n<chat> is one of:  me | @username | t.me/name | <chat id> | part of a chat title\n"
+            "\n<chat> is one of:  me | @username | t.me/name | <chat id as shown by tbox watch>\n"
             "\nenvironment:\n"
             "  TBOX_HOME       data directory (default ~/.tbox)\n"
             "  TBOX_API_ID, TBOX_API_HASH\n"

@@ -61,10 +61,7 @@ add_executable(tbox
   src/main.c
   src/cmd/login.c
   src/cmd/logout.c
-  src/cmd/me.c
-  src/cmd/search.c
   src/cmd/send.c
-  src/cmd/read.c
   src/cmd/upload.c
 )
 target_link_libraries(tbox PRIVATE tbox_core)

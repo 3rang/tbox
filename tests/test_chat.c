@@ -24,31 +24,17 @@ static void test_ref_parse(void) {
     CHECK(chat_ref_parse("t.me/tdlib", &r) == 0 && r.kind == CHAT_REF_USERNAME);
     CHECK_STR(r.text, "tdlib");
 
-    CHECK(chat_ref_parse("Family group", &r) == 0 && r.kind == CHAT_REF_NAME);
-    CHECK_STR(r.text, "Family group");
-    CHECK(chat_ref_parse("-", &r) == 0 && r.kind == CHAT_REF_NAME);
+    /* Titles are not resolved: tbox watch shows the id instead. */
+    CHECK(chat_ref_parse("Family group", &r) == -1);
+    CHECK(chat_ref_parse("-", &r) == -1);
+    CHECK(chat_ref_parse("12ab", &r) == -1);
 
     CHECK(chat_ref_parse("", &r) == -1);
     CHECK(chat_ref_parse("@", &r) == -1);
     CHECK(chat_ref_parse(NULL, &r) == -1);
 }
 
-static void test_type_and_names(void) {
-    cJSON *chat = cJSON_Parse("{\"@type\":\"chat\",\"id\":1,\"title\":\"T\","
-                              "\"type\":{\"@type\":\"chatTypeSupergroup\",\"is_channel\":true}}");
-    CHECK_STR(chat_type_name(chat), "channel");
-    cJSON_ReplaceItemInObject(jobj(chat, "type"), "is_channel", cJSON_CreateFalse());
-    CHECK_STR(chat_type_name(chat), "supergroup");
-    cJSON_Delete(chat);
-
-    chat = cJSON_Parse("{\"type\":{\"@type\":\"chatTypePrivate\",\"user_id\":5}}");
-    CHECK_STR(chat_type_name(chat), "private");
-    cJSON_Delete(chat);
-    chat = cJSON_Parse("{\"type\":{\"@type\":\"chatTypeBasicGroup\"}}");
-    CHECK_STR(chat_type_name(chat), "group");
-    cJSON_Delete(chat);
-    CHECK_STR(chat_type_name(NULL), "?");
-
+static void test_names(void) {
     cJSON *user = cJSON_Parse("{\"first_name\":\"Ada\",\"last_name\":\"Lovelace\","
                               "\"usernames\":{\"active_usernames\":[\"ada\",\"countess\"]}}");
     char name[64];
@@ -92,6 +78,16 @@ static void test_resolve_username(void) {
     CHECK(strstr(err, "USERNAME_NOT_OCCUPIED") != NULL);
 }
 
+static void test_resolve_rejects_other_text(void) {
+    fake_td_reset();
+    Td td;
+    td_init(&td, fake_td_api());
+    char err[512] = "";
+    CHECK(chat_resolve(&td, "Family", err, sizeof err) == 0);
+    CHECK(strstr(err, "not a chat") != NULL);
+    CHECK(fake_td_sent_count() == 0);
+}
+
 static void test_resolve_id_loads_chats_on_miss(void) {
     fake_td_reset();
     Td td;
@@ -112,52 +108,12 @@ static void test_resolve_id_loads_chats_on_miss(void) {
     CHECK(strstr(err, "4242") != NULL);
 }
 
-static void test_resolve_name(void) {
-    fake_td_reset();
-    Td td;
-    td_init(&td, fake_td_api());
-    char err[512] = "";
-    fake_td_on("searchChats", "{\"@type\":\"chats\",\"total_count\":1,\"chat_ids\":[99]}");
-    CHECK(chat_resolve(&td, "Family", err, sizeof err) == 99);
-    CHECK_STR(jstr(fake_td_last_of("searchChats"), "query"), "Family");
-
-    fake_td_reset();
-    td_init(&td, fake_td_api());
-    fake_td_on("searchChats", "{\"@type\":\"chats\",\"total_count\":2,\"chat_ids\":[1,2]}");
-    fake_td_on("getChat", "{\"@type\":\"chat\",\"id\":1,\"title\":\"Family A\"}");
-    CHECK(chat_resolve(&td, "Family", err, sizeof err) == 0);
-    CHECK(strstr(err, "matches 2 chats") != NULL);
-    CHECK(strstr(err, "Family A") != NULL);
-
-    fake_td_reset();
-    td_init(&td, fake_td_api());
-    fake_td_on("searchChats", "{\"@type\":\"chats\",\"total_count\":0,\"chat_ids\":[]}");
-    CHECK(chat_resolve(&td, "Nobody", err, sizeof err) == 0);
-    CHECK(strstr(err, "tbox search") != NULL);
-}
-
-static void test_describe(void) {
-    fake_td_reset();
-    Td td;
-    td_init(&td, fake_td_api());
-    fake_td_on("getUser", "{\"@type\":\"user\",\"id\":5,\"usernames\":{\"active_usernames\":[\"ada\"]}}");
-    cJSON *chat = cJSON_Parse("{\"@type\":\"chat\",\"id\":5,\"title\":\"Ada\","
-                              "\"type\":{\"@type\":\"chatTypePrivate\",\"user_id\":5}}");
-    char line[256];
-    chat_describe(&td, chat, line, sizeof line);
-    CHECK(strstr(line, "private") != NULL);
-    CHECK(strstr(line, "Ada") != NULL);
-    CHECK(strstr(line, "@ada") != NULL);
-    cJSON_Delete(chat);
-}
-
 int main(void) {
     test_ref_parse();
-    test_type_and_names();
+    test_names();
     test_resolve_me();
     test_resolve_username();
+    test_resolve_rejects_other_text();
     test_resolve_id_loads_chats_on_miss();
-    test_resolve_name();
-    test_describe();
     TEST_MAIN_END();
 }

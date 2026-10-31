@@ -14,6 +14,7 @@
 #include "cmd/commands.h"
 #include "core/platform.h"
 #include "core/session.h"
+#include "tg/chat.h"
 
 static int ask_credentials(Config *cfg) {
     char line[sizeof cfg->api_hash];
@@ -74,8 +75,20 @@ int cmd_login(int argc, char **argv) {
     if (rc != EXIT_OK) {
         return rc;
     }
-    printf("Logged in.\n");
-    rc = print_me(&s.td);
+    cJSON *me = td_request(&s.td, jreq("getMe"), TD_TIMEOUT);
+    if (td_is_error(me)) {
+        fprintf(stderr, "error: getMe: %s\n", td_error_message(me));
+        rc = EXIT_ERROR;
+    } else {
+        char name[256];
+        chat_user_name(me, name, sizeof name);
+        printf("Logged in as %s", name);
+        if (chat_username(me)[0] != '\0') {
+            printf(" (@%s)", chat_username(me));
+        }
+        printf(", id %lld\n", jint(me, "id"));
+    }
+    cJSON_Delete(me);
     session_close(&s);
     return rc;
 }

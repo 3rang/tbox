@@ -65,27 +65,7 @@ int chat_ref_parse(const char *s, ChatRef *out) {
         }
         return out->text[0] != '\0' ? 0 : -1;
     }
-    out->kind = CHAT_REF_NAME;
-    snprintf(out->text, sizeof out->text, "%s", s);
-    return 0;
-}
-
-const char *chat_type_name(const cJSON *chat) {
-    const cJSON *type = jobj(chat, "type");
-    const char *t = jtype(type);
-    if (strcmp(t, "chatTypePrivate") == 0) {
-        return "private";
-    }
-    if (strcmp(t, "chatTypeBasicGroup") == 0) {
-        return "group";
-    }
-    if (strcmp(t, "chatTypeSupergroup") == 0) {
-        return jbool(type, "is_channel") ? "channel" : "supergroup";
-    }
-    if (strcmp(t, "chatTypeSecret") == 0) {
-        return "secret";
-    }
-    return "?";
+    return -1;
 }
 
 const char *chat_username(const cJSON *obj) {
@@ -159,45 +139,10 @@ static long long resolve_id(Td *td, long long id, char *err, size_t errlen) {
     return 0;
 }
 
-static long long resolve_name(Td *td, const char *name, char *err, size_t errlen) {
-    cJSON *req = jreq("searchChats");
-    cJSON_AddStringToObject(req, "query", name);
-    cJSON_AddNumberToObject(req, "limit", 10);
-    cJSON *r = td_request(td, req, TD_TIMEOUT);
-    if (td_is_error(r)) {
-        snprintf(err, errlen, "searchChats: %s", td_error_message(r));
-        cJSON_Delete(r);
-        return 0;
-    }
-    cJSON *ids = jobj(r, "chat_ids");
-    int n = cJSON_GetArraySize(ids);
-    if (n == 0) {
-        cJSON_Delete(r);
-        snprintf(err, errlen, "no chat named \"%s\"; try `tbox search %s`", name, name);
-        return 0;
-    }
-    if (n > 1) {
-        size_t used = (size_t)snprintf(err, errlen, "\"%s\" matches %d chats, use the id:", name, n);
-        for (int i = 0; i < n && used < errlen; i++) {
-            long long id = (long long)cJSON_GetArrayItem(ids, i)->valuedouble;
-            cJSON *g = jreq("getChat");
-            cJSON_AddNumberToObject(g, "chat_id", (double)id);
-            cJSON *chat = td_request(td, g, TD_TIMEOUT);
-            used += (size_t)snprintf(err + used, errlen - used, "\n  %lld  %s", id, jstr(chat, "title"));
-            cJSON_Delete(chat);
-        }
-        cJSON_Delete(r);
-        return 0;
-    }
-    long long id = (long long)cJSON_GetArrayItem(ids, 0)->valuedouble;
-    cJSON_Delete(r);
-    return id;
-}
-
 long long chat_resolve(Td *td, const char *ref, char *err, size_t errlen) {
     ChatRef cr;
     if (chat_ref_parse(ref, &cr) != 0) {
-        snprintf(err, errlen, "empty chat reference");
+        snprintf(err, errlen, "\"%s\" is not a chat: use me, @username or a chat id", ref);
         return 0;
     }
     switch (cr.kind) {
@@ -206,35 +151,8 @@ long long chat_resolve(Td *td, const char *ref, char *err, size_t errlen) {
     case CHAT_REF_USERNAME:
         return resolve_username(td, cr.text, err, errlen);
     case CHAT_REF_ID:
-        return resolve_id(td, cr.id, err, errlen);
-    case CHAT_REF_NAME:
     default:
-        return resolve_name(td, cr.text, err, errlen);
+        return resolve_id(td, cr.id, err, errlen);
     }
 }
 
-/* --- description ---------------------------------------------------------- */
-
-void chat_describe(Td *td, const cJSON *chat, char *buf, size_t n) {
-    const cJSON *type = jobj(chat, "type");
-    const char *t = jtype(type);
-    char username[128] = "";
-
-    cJSON *req = NULL;
-    if (strcmp(t, "chatTypePrivate") == 0) {
-        req = jreq("getUser");
-        cJSON_AddNumberToObject(req, "user_id", (double)jint(type, "user_id"));
-    } else if (strcmp(t, "chatTypeSupergroup") == 0) {
-        req = jreq("getSupergroup");
-        cJSON_AddNumberToObject(req, "supergroup_id", (double)jint(type, "supergroup_id"));
-    }
-    if (req != NULL) {
-        cJSON *r = td_request(td, req, TD_TIMEOUT);
-        if (!td_is_error(r) && chat_username(r)[0] != '\0') {
-            snprintf(username, sizeof username, "  @%s", chat_username(r));
-        }
-        cJSON_Delete(r);
-    }
-    snprintf(buf, n, "%-15lld %-10s %s%s", jint(chat, "id"), chat_type_name(chat),
-             jstr(chat, "title"), username);
-}
