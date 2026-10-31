@@ -24,6 +24,11 @@ set(TBOX_VERSION "${PROJECT_VERSION}" CACHE STRING "Version string printed by tb
 
 option(TBOX_BUILD_TESTS "Build the unit tests" ON)
 
+# Optional: bake Telegram API credentials into the binary so users of this
+# build need not set TBOX_API_ID / TBOX_API_HASH (the environment still wins).
+set(TBOX_API_ID "" CACHE STRING "Default Telegram api_id compiled into tbox")
+set(TBOX_API_HASH "" CACHE STRING "Default Telegram api_hash compiled into tbox")
+
 if(MSVC)
   add_compile_options(/W4 /utf-8)
   add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
@@ -45,6 +50,9 @@ if(NOT MSVC)
   target_compile_options(qrcodegen PRIVATE -w)
 endif()
 
+# --- TDLib, linked at compile time (prebuilt by default, see cmake/tdlib.cmake)
+include(cmake/tdlib.cmake)
+
 # --- core: everything a command needs, without main() -----------------------
 add_library(tbox_core STATIC
   src/core/td.c
@@ -58,10 +66,11 @@ add_library(tbox_core STATIC
   src/tg/outbox.c
 )
 target_include_directories(tbox_core PUBLIC src)
-target_link_libraries(tbox_core PUBLIC cjson qrcodegen)
+target_link_libraries(tbox_core PUBLIC cjson qrcodegen tdlib)
 target_compile_definitions(tbox_core PUBLIC TBOX_VERSION="${TBOX_VERSION}")
-if(UNIX)
-  target_link_libraries(tbox_core PUBLIC ${CMAKE_DL_LIBS})
+if(TBOX_API_ID AND TBOX_API_HASH)
+  target_compile_definitions(tbox_core PRIVATE
+    TBOX_DEFAULT_API_ID="${TBOX_API_ID}" TBOX_DEFAULT_API_HASH="${TBOX_API_HASH}")
 endif()
 
 # --- the executable ----------------------------------------------------------
@@ -75,14 +84,20 @@ add_executable(tbox
 )
 target_link_libraries(tbox PRIVATE tbox_core)
 
-# --- the TDLib runtime, staged beside the executable -------------------------
-include(cmake/tdjson.cmake)
-add_custom_command(TARGET tbox POST_BUILD
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TBOX_TDJSON_FILES} $<TARGET_FILE_DIR:tbox>
-  COMMENT "Staging libtdjson beside tbox")
+# A static TDLib build is C++ inside; the final link must know.
+if(TBOX_TDLIB_FROM_SOURCE)
+  set_target_properties(tbox PROPERTIES LINKER_LANGUAGE CXX)
+endif()
+
+# --- the shared libtdjson (prebuilt mode) goes beside the executable ---------
+if(TBOX_TDJSON_FILES)
+  add_custom_command(TARGET tbox POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TBOX_TDJSON_FILES} $<TARGET_FILE_DIR:tbox>
+    COMMENT "Staging libtdjson beside tbox")
+  install(FILES ${TBOX_TDJSON_FILES} DESTINATION bin)
+endif()
 
 install(TARGETS tbox RUNTIME DESTINATION bin)
-install(FILES ${TBOX_TDJSON_FILES} DESTINATION bin)
 install(FILES LICENSE THIRD_PARTY_NOTICES.md README.md DESTINATION .)
 
 # --- tests: a fake tdjson, no network, no account ----------------------------
@@ -94,6 +109,9 @@ if(TBOX_BUILD_TESTS)
   foreach(t test_td test_auth test_chat test_message test_config test_outbox test_qr)
     add_executable(${t} tests/${t}.c)
     target_link_libraries(${t} PRIVATE tbox_fake_td)
+    if(TBOX_TDLIB_FROM_SOURCE)
+      set_target_properties(${t} PROPERTIES LINKER_LANGUAGE CXX)
+    endif()
     add_test(NAME ${t} COMMAND ${t})
   endforeach()
 endif()

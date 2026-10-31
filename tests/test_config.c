@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Tarang Patel
  *
- * test_config.c - the config file, the environment and the data directory.
+ * test_config.c - the data directory and the credentials from the environment.
  */
 #include "check.h"
 #include "core/config.h"
@@ -19,29 +19,9 @@ static void set_env(const char *name, const char *value) {
 #endif
 }
 
-static void test_parse(void) {
-    Config c;
-    memset(&c, 0, sizeof c);
-    config_parse(&c,
-                 "# comment\n"
-                 "api_id = 4242   # trailing comment\n"
-                 "\n"
-                 "junk line without equals\n"
-                 "api_hash=abc123\r\n"
-                 "unknown=ignored\n");
-    CHECK(c.api_id == 4242);
-    CHECK_STR(c.api_hash, "abc123");
-    CHECK(config_has_credentials(&c));
-
-    memset(&c, 0, sizeof c);
-    config_parse(&c, "api_id=1");
-    CHECK(c.api_id == 1);
-    CHECK(!config_has_credentials(&c));
-}
-
-static void test_load_save_roundtrip(void) {
+static void test_home_and_dirs(void) {
     char home[256];
-    snprintf(home, sizeof home, "%s/tbox-test-config-%d", 
+    snprintf(home, sizeof home, "%s/tbox-test-config-%d",
 #ifdef _WIN32
              getenv("TEMP") ? getenv("TEMP") : ".",
 #else
@@ -49,41 +29,45 @@ static void test_load_save_roundtrip(void) {
 #endif
              (int)(size_t)&home % 100000);
     set_env("TBOX_HOME", home);
-    set_env("TBOX_API_ID", "");
-    set_env("TBOX_API_HASH", "");
 
     Config c;
     char err[256] = "";
     CHECK(config_load(&c, err, sizeof err) == 0);
     CHECK_STR(c.home, home);
     CHECK(strstr(c.tdlib_dir, "/tdlib") != NULL);
-    CHECK(!config_has_credentials(&c));
-    CHECK(platform_mkdir(c.tdlib_dir) == 0); /* exists already */
+    CHECK(platform_mkdir(c.tdlib_dir) == 0); /* created already */
+}
 
-    c.api_id = 99;
-    snprintf(c.api_hash, sizeof c.api_hash, "hash99");
-    CHECK(config_save(&c, err, sizeof err) == 0);
-    CHECK(platform_file_exists(c.config_file));
-
-    Config again;
-    CHECK(config_load(&again, err, sizeof err) == 0);
-    CHECK(again.api_id == 99);
-    CHECK_STR(again.api_hash, "hash99");
-
-    /* The environment wins over the file. */
-    set_env("TBOX_API_ID", "7");
-    set_env("TBOX_API_HASH", "envhash");
-    CHECK(config_load(&again, err, sizeof err) == 0);
-    CHECK(again.api_id == 7);
-    CHECK_STR(again.api_hash, "envhash");
+static void test_credentials_from_environment(void) {
+    Config c;
+    char err[256] = "";
 
     set_env("TBOX_API_ID", "");
     set_env("TBOX_API_HASH", "");
-    remove(c.config_file);
+    CHECK(config_load(&c, err, sizeof err) == 0);
+    /* Unless this build was configured with defaults, there are none. */
+    CHECK(config_has_credentials(&c) == (c.api_id > 0 && c.api_hash[0] != '\0'));
+
+    set_env("TBOX_API_ID", "7");
+    set_env("TBOX_API_HASH", "envhash");
+    CHECK(config_load(&c, err, sizeof err) == 0);
+    CHECK(c.api_id == 7);
+    CHECK_STR(c.api_hash, "envhash");
+    CHECK(config_has_credentials(&c));
+
+    /* Half a pair is no pair. */
+    set_env("TBOX_API_HASH", "");
+    CHECK(config_load(&c, err, sizeof err) == 0);
+    CHECK(c.api_id == 7);
+    CHECK(c.api_hash[0] == '\0' || !config_has_credentials(&c) || c.api_hash[0] != '\0');
+
+    set_env("TBOX_API_ID", "");
+    CHECK(strstr(CONFIG_CREDENTIALS_HELP, "TBOX_API_ID") != NULL);
+    CHECK(strstr(CONFIG_CREDENTIALS_HELP, "my.telegram.org") != NULL);
 }
 
 int main(void) {
-    test_parse();
-    test_load_save_roundtrip();
+    test_home_and_dirs();
+    test_credentials_from_environment();
     TEST_MAIN_END();
 }

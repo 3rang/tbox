@@ -14,15 +14,11 @@
 #include <direct.h>
 #include <io.h>
 #else
-#include <dlfcn.h>
 #include <limits.h>
 #include <sys/stat.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
-#ifdef __APPLE__
-#include <mach-o/dyld.h>
-#endif
 #endif
 
 void platform_init(void) {
@@ -106,78 +102,6 @@ int platform_absolute_path(const char *path, char *buf, size_t n) {
     return 0;
 }
 
-static void strip_last_component(char *path) {
-    char *slash = strrchr(path, '/');
-#ifdef _WIN32
-    char *bslash = strrchr(path, '\\');
-    if (bslash != NULL && (slash == NULL || bslash > slash)) {
-        slash = bslash;
-    }
-#endif
-    if (slash != NULL) {
-        *slash = '\0';
-    } else {
-        strcpy(path, ".");
-    }
-}
-
-int platform_exe_dir(char *buf, size_t n) {
-#ifdef _WIN32
-    DWORD len = GetModuleFileNameA(NULL, buf, (DWORD)n);
-    if (len == 0 || len >= n) {
-        return -1;
-    }
-#elif defined(__APPLE__)
-    uint32_t size = (uint32_t)n;
-    if (_NSGetExecutablePath(buf, &size) != 0) {
-        return -1;
-    }
-#else
-    ssize_t len = readlink("/proc/self/exe", buf, n - 1);
-    if (len <= 0) {
-        return -1;
-    }
-    buf[len] = '\0';
-#endif
-    strip_last_component(buf);
-    return 0;
-}
-
-void *platform_dlopen(const char *path, char *err, size_t errlen) {
-#ifdef _WIN32
-    HMODULE h = LoadLibraryA(path);
-    if (h == NULL && err != NULL && errlen > 0) {
-        snprintf(err, errlen, "LoadLibrary(%s) failed, error %lu", path, GetLastError());
-    }
-    return (void *)h;
-#else
-    void *h = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-    if (h == NULL && err != NULL && errlen > 0) {
-        const char *m = dlerror();
-        snprintf(err, errlen, "%s", m != NULL ? m : "dlopen failed");
-    }
-    return h;
-#endif
-}
-
-void *platform_dlsym(void *handle, const char *name) {
-#ifdef _WIN32
-    return (void *)GetProcAddress((HMODULE)handle, name);
-#else
-    return dlsym(handle, name);
-#endif
-}
-
-const char *platform_tdjson_name(void) {
-#if defined(_WIN32)
-    return "tdjson.dll";
-#elif defined(__APPLE__)
-    return "libtdjson.dylib";
-#else
-    return "libtdjson.so";
-#endif
-}
-
 static int read_line(char *buf, size_t n) {
     if (fgets(buf, (int)n, stdin) == NULL) {
         buf[0] = '\0';
@@ -185,12 +109,6 @@ static int read_line(char *buf, size_t n) {
     }
     buf[strcspn(buf, "\r\n")] = '\0';
     return 0;
-}
-
-int platform_read_line(const char *prompt, char *buf, size_t n) {
-    fputs(prompt, stdout);
-    fflush(stdout);
-    return read_line(buf, n);
 }
 
 int platform_read_secret(const char *prompt, char *buf, size_t n) {

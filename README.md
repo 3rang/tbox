@@ -40,7 +40,7 @@ watching... press Ctrl-C to stop
 
 | Command | What it does |
 |---|---|
-| `tbox login [--api-id ID --api-hash HASH]` | sign in once by scanning a QR code; asks the 2FA password if you have one |
+| `tbox login` | sign in once by scanning a QR code; asks the 2FA password if you have one |
 | `tbox logout` | sign out and delete the local session |
 | `tbox send <chat> <text...>` | send a text message |
 | `tbox upload <chat> <file> [caption...]` | send a file as a document |
@@ -74,21 +74,25 @@ are not notarised: `xattr -dr com.apple.quarantine <unpacked folder>`.
 
 ## First run: API credentials
 
-Telegram wants every client to identify with an **api_id** and
-**api_hash**. Get yours at <https://my.telegram.org/apps> (log in with your
-phone, create an app, any name and platform). `tbox login` asks for them
-the first time and stores them in `~/.tbox/config`. Alternatively:
+Telegram wants every client *application* to identify with an **api_id**
+and **api_hash**. Get yours at <https://my.telegram.org/apps> (log in with
+your phone, create an app, any name and platform), then put them in the
+environment - your shell profile is the right place:
 
 ```sh
-tbox login --api-id 12345 --api-hash 0123456789abcdef0123456789abcdef
-# or
-export TBOX_API_ID=12345 TBOX_API_HASH=0123456789abcdef...
+export TBOX_API_ID=12345
+export TBOX_API_HASH=0123456789abcdef0123456789abcdef
 ```
+
+Every command needs them (TDLib sends them on each start), and tbox
+prints exactly this instruction if they are missing. It never writes them
+to disk. If you build tbox yourself you can compile your pair in as the
+default instead (`-DTBOX_API_ID=... -DTBOX_API_HASH=...`, see below); the
+environment still overrides it.
 
 Everything tbox keeps lives in `~/.tbox` (`TBOX_HOME` to change it):
 
 ```
-~/.tbox/config   api_id, api_hash
 ~/.tbox/tdlib/   TDLib's database: your session, chats and message cache
 ```
 
@@ -99,43 +103,47 @@ deletes `tdlib/`.
 ## Build from source
 
 Requirements: CMake 3.18+, a C11 compiler (gcc, clang or MSVC), network
-access during the first configure so CMake can download the prebuilt TDLib.
+access during the first configure.
 
 ```sh
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release
 ctest --test-dir build -C Release        # unit tests, no account needed
-cmake --install build --prefix dist      # dist/bin/tbox + libtdjson
+cmake --install build --prefix dist      # dist/bin/tbox (+ libtdjson)
 ```
 
-CMake fetches the pinned TDLib (`libtdjson`, from the
-[tdlib.native](https://github.com/ForNeVeR/tdlib.native) packages, sha256
-checked) for your OS and copies it next to the executable. To use your own
-build of TDLib instead:
+TDLib is linked at compile time, in one of two ways
+([cmake/tdlib.cmake](cmake/tdlib.cmake)):
+
+| | What happens | Result |
+|---|---|---|
+| default | CMake downloads the pinned prebuilt `libtdjson` for your OS/CPU from the [tdlib.native](https://github.com/ForNeVeR/tdlib.native) packages (sha256 checked) and links against it | `tbox` + `libtdjson` side by side; fast build |
+| `-DTBOX_TDLIB_FROM_SOURCE=ON` | CMake fetches TDLib's sources at the same version and compiles them into tbox statically; needs a C++17 compiler, OpenSSL, zlib and `gperf`, and 10-40 minutes | one self-contained `tbox`, nothing beside it |
+
+Useful options:
 
 ```sh
-cmake -B build -DTBOX_TDJSON_DIR=/path/to/dir/containing/libtdjson.so
+-DTBOX_TDJSON_DIR=/dir/with/libtdjson.so   # use a prebuilt you already have
+-DTBOX_API_ID=12345 -DTBOX_API_HASH=...     # compile your credentials in as the default
 ```
-
-At run time tbox looks for `libtdjson` next to its own executable, then at
-`$TBOX_TDJSON`, then on the system library path.
 
 ## How it works
 
 TDLib does the hard parts (MTProto, encryption, the local database). Its
 C interface is four functions - `td_send`, `td_receive`, `td_execute`,
-`td_create_client_id` - and everything passing through them is a JSON
-string. tbox is organised along that line:
+`td_create_client_id` - linked in at build time, and everything passing
+through them is a JSON string. tbox is organised along that line:
 
 ```
 src/
   main.c            command table and usage
   core/             things every command needs
-    td.c            loads libtdjson at run time; td_request() = send + wait for the reply
+    td.c            the four TDLib calls behind a table (so tests can fake them);
+                    td_request() = post a request + wait for its reply
     json.h          ten-line helpers over cJSON (jstr, jint, jobj, ...)
-    config.c        ~/.tbox, the config file, the environment
+    config.c        ~/.tbox and the API credentials from the environment
     session.c       open (load, authorize) and close (flush) around each command
-    platform.c      the Windows/POSIX differences: dlopen, home dir, hidden input, colours
+    platform.c      the Windows/POSIX differences: home dir, hidden input, console colours
   tg/               Telegram concepts
     auth.c          the login state machine: WaitTdlibParameters -> QR -> [password] -> Ready
     qr.c            draws the tg://login link as a QR code in the terminal
@@ -149,8 +157,8 @@ third_party/        cJSON (MIT) and Nayuki's QR encoder (MIT)
 
 A command runs like this:
 
-1. `session_open()` loads the config and `libtdjson`, creates a client,
-   and runs `auth_run()`. With a saved session that is one
+1. `session_open()` reads the environment, creates a TDLib client and
+   runs `auth_run()`. With a saved session that is one
    `setTdlibParameters` and TDLib answers `authorizationStateReady`.
    Otherwise the command stops with exit code 3.
 2. The command sends its requests (`sendMessage`, ...) and waits for the
@@ -178,10 +186,19 @@ link, we draw it, the phone scans it, and TDLib moves to `Ready` (or to
 `WaitPassword` if two-step verification is on). The link rotates every
 ~30 seconds and tbox redraws it.
 
+### Why no config file for the credentials?
+
+api_id/api_hash identify the *application*, not you, and a secret copied
+into a file in every user's home is a secret spread around. The
+environment keeps it in one place you control; a build you distribute can
+carry its own pair compiled in, the way the official Telegram apps do.
+Your *login* is a different thing - that is TDLib's database in
+`~/.tbox/tdlib`, created by the QR scan and removed by `tbox logout`.
+
 ## Using this in your own project
 
 Copy `src/core/td.c`, `src/core/td.h`, `src/core/json.h`,
-`src/core/platform.c` and `third_party/cjson`; that is the whole bridge.
+`cmake/tdlib.cmake` and `third_party/cjson`; that is the whole bridge.
 `src/tg/auth.c` is the login flow. `tests/fake_td.c` shows how to
 unit-test code that talks to TDLib without a network or an account.
 

@@ -3,15 +3,14 @@
  *
  * td.h - the bridge to TDLib's JSON interface (libtdjson).
  *
- * libtdjson exposes four C functions. tbox loads the library at run time
- * so the same executable works with the libtdjson staged next to it, one
- * named by $TBOX_TDJSON, or one found on the system's library path. The
- * functions sit in a TdApi table so tests can plug in a fake.
+ * TDLib's C API is four functions, linked in at build time (see
+ * cmake/tdlib.cmake). They sit in a TdApi table so the tests can plug in
+ * a fake instead; td_real_api() is the table with the real ones.
  *
  * Talking to TDLib is: send a JSON request, receive JSON events. Events
  * are either replies (they carry back the "@extra" we attached) or
  * updates (anything TDLib wants to tell us). td_request() does the
- * bookkeeping: it sends, then pumps events until the matching reply
+ * bookkeeping: it posts, then polls events until the matching reply
  * arrives, handing every update met on the way to the update handler.
  */
 #ifndef TBOX_TD_H
@@ -42,20 +41,20 @@ struct Td {
     void *on_update_user;
 };
 
-/* Locate and load libtdjson. Returns 0 and fills api, or -1 with err. */
-int td_load(TdApi *api, char *err, size_t errlen);
+/* The linked TDLib. */
+const TdApi *td_real_api(void);
 
 /* Create a client. Verbosity 1 keeps TDLib quiet except for fatal errors. */
 void td_init(Td *td, const TdApi *api);
 
 void td_set_update_handler(Td *td, TdUpdateFn fn, void *user);
 
-/* Send without waiting. Takes ownership of req. */
-void td_send(Td *td, cJSON *req);
+/* Send without waiting for a reply. Takes ownership of req. */
+void td_post(Td *td, cJSON *req);
 
 /* Wait up to timeout seconds for one event. Caller frees. NULL on timeout.
  * Does not dispatch to the update handler. */
-cJSON *td_receive(Td *td, double timeout);
+cJSON *td_poll(Td *td, double timeout);
 
 /* Receive one event and dispatch it to the update handler.
  * Returns 1 if an event was handled, 0 on timeout. */

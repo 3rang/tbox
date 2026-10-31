@@ -111,7 +111,7 @@ static void test_missing_credentials(void) {
     fake_td_on("getAuthorizationState", "{\"@type\":\"authorizationStateWaitTdlibParameters\"}");
     CHECK(auth_run(&td, &c, 0, err, sizeof err) == AUTH_NOT_LOGGED_IN);
     CHECK(fake_td_count_of("setTdlibParameters") == 0);
-    CHECK(strstr(err, "tbox login") != NULL);
+    CHECK(strstr(err, "credentials") != NULL);
 }
 
 static void test_parameter_error_fails(void) {

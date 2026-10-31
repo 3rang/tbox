@@ -16,7 +16,7 @@ static const struct {
     const char *usage;
     const char *help;
 } COMMANDS[] = {
-    { "login", cmd_login, "login [--api-id ID --api-hash HASH]", "sign in once by scanning a QR code with your phone" },
+    { "login", cmd_login, "login", "sign in once by scanning a QR code with your phone" },
     { "logout", cmd_logout, "logout", "sign out and forget the session" },
     { "send", cmd_send, "send <chat> <text...>", "send a text message" },
     { "upload", cmd_upload, "upload <chat> <file> [caption...]", "send a file" },
@@ -34,8 +34,7 @@ static void usage(FILE *out) {
             "\nenvironment:\n"
             "  TBOX_HOME       data directory (default ~/.tbox)\n"
             "  TBOX_API_ID, TBOX_API_HASH\n"
-            "                  API credentials (override ~/.tbox/config)\n"
-            "  TBOX_TDJSON     path to libtdjson if not beside the executable\n"
+            "                  your Telegram API credentials (https://my.telegram.org/apps)\n"
             "  TBOX_DEBUG=1    print every JSON message exchanged with TDLib\n"
             "\nexit codes: 0 ok, 1 error, 2 usage, 3 not logged in\n");
 }

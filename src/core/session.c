@@ -16,17 +16,12 @@ int session_open(Session *s, int interactive) {
         fprintf(stderr, "error: %s\n", err);
         return EXIT_ERROR;
     }
-    if (!interactive && !config_has_credentials(&s->cfg)) {
-        fprintf(stderr, "not logged in; run `tbox login`\n");
+    if (!config_has_credentials(&s->cfg)) {
+        fprintf(stderr, "%s\n", CONFIG_CREDENTIALS_HELP);
         return EXIT_NOT_LOGGED_IN;
     }
 
-    TdApi api;
-    if (td_load(&api, err, sizeof err) != 0) {
-        fprintf(stderr, "error: %s\n", err);
-        return EXIT_ERROR;
-    }
-    td_init(&s->td, &api);
+    td_init(&s->td, td_real_api());
 
     switch (auth_run(&s->td, &s->cfg, interactive, err, sizeof err)) {
     case AUTH_OK:

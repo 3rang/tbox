@@ -9,56 +9,15 @@
 
 #include "core/platform.h"
 
-static int try_load(const char *path, TdApi *api, char *err, size_t errlen) {
-    void *h = platform_dlopen(path, err, errlen);
-    if (h == NULL) {
-        return -1;
-    }
-    *(void **)&api->create_client_id = platform_dlsym(h, "td_create_client_id");
-    *(void **)&api->send = platform_dlsym(h, "td_send");
-    *(void **)&api->receive = platform_dlsym(h, "td_receive");
-    *(void **)&api->execute = platform_dlsym(h, "td_execute");
-    if (api->create_client_id == NULL || api->send == NULL ||
-        api->receive == NULL || api->execute == NULL) {
-        snprintf(err, errlen, "%s does not export the td_json_client API", path);
-        return -1;
-    }
-    return 0;
-}
+/* TDLib's C API (td/telegram/td_json_client.h), resolved by the linker. */
+int td_create_client_id(void);
+void td_send(int client_id, const char *request);
+const char *td_receive(double timeout);
+const char *td_execute(const char *request);
 
-int td_load(TdApi *api, char *err, size_t errlen) {
-    char path[1024];
-    char tried[2048] = "";
-
-    const char *env = getenv("TBOX_TDJSON");
-    if (env != NULL && env[0] != '\0') {
-        if (try_load(env, api, err, errlen) == 0) {
-            return 0;
-        }
-        snprintf(tried, sizeof tried, "\n  %s: %s", env, err);
-    }
-
-    if (platform_exe_dir(path, sizeof path) == 0) {
-        size_t len = strlen(path);
-        snprintf(path + len, sizeof path - len, "/%s", platform_tdjson_name());
-        if (try_load(path, api, err, errlen) == 0) {
-            return 0;
-        }
-        size_t tl = strlen(tried);
-        snprintf(tried + tl, sizeof tried - tl, "\n  %s: %s", path, err);
-    }
-
-    if (try_load(platform_tdjson_name(), api, err, errlen) == 0) {
-        return 0;
-    }
-    size_t tl = strlen(tried);
-    snprintf(tried + tl, sizeof tried - tl, "\n  %s: %s", platform_tdjson_name(), err);
-
-    snprintf(err, errlen,
-             "cannot load TDLib (%s). Put it next to the tbox executable or set "
-             "TBOX_TDJSON to its path. Tried:%s",
-             platform_tdjson_name(), tried);
-    return -1;
+const TdApi *td_real_api(void) {
+    static const TdApi api = { td_create_client_id, td_send, td_receive, td_execute };
+    return &api;
 }
 
 void td_init(Td *td, const TdApi *api) {
@@ -80,7 +39,7 @@ void td_set_update_handler(Td *td, TdUpdateFn fn, void *user) {
     td->on_update_user = user;
 }
 
-void td_send(Td *td, cJSON *req) {
+void td_post(Td *td, cJSON *req) {
     char *text = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
     if (text == NULL) {
@@ -93,7 +52,7 @@ void td_send(Td *td, cJSON *req) {
     free(text);
 }
 
-cJSON *td_receive(Td *td, double timeout) {
+cJSON *td_poll(Td *td, double timeout) {
     const char *text = td->api.receive(timeout);
     if (text == NULL) {
         return NULL;
@@ -119,7 +78,7 @@ static void dispatch(Td *td, const cJSON *ev) {
 }
 
 int td_pump(Td *td, double timeout) {
-    cJSON *ev = td_receive(td, timeout);
+    cJSON *ev = td_poll(td, timeout);
     if (ev == NULL) {
         return 0;
     }
@@ -132,9 +91,9 @@ cJSON *td_request(Td *td, cJSON *req, double timeout) {
     char extra[32];
     snprintf(extra, sizeof extra, "tbox-%ld", ++td->seq);
     cJSON_AddStringToObject(req, "@extra", extra);
-    td_send(td, req);
+    td_post(td, req);
 
-    /* Receive in short slices until the deadline, but stop as soon as
+    /* Poll in short slices until the deadline, but stop as soon as
      * the reply shows up. */
     double deadline = platform_now() + timeout;
     for (;;) {
@@ -142,7 +101,7 @@ cJSON *td_request(Td *td, cJSON *req, double timeout) {
         if (left <= 0) {
             break;
         }
-        cJSON *ev = td_receive(td, left < 1.0 ? left : 1.0);
+        cJSON *ev = td_poll(td, left < 1.0 ? left : 1.0);
         if (ev == NULL) {
             continue;
         }
@@ -159,7 +118,7 @@ void td_close(Td *td) {
     if (td->closed) {
         return;
     }
-    td_send(td, jreq("close"));
+    td_post(td, jreq("close"));
     /* Give up after ~10 s of silence; a busy stream does not count. */
     for (int idle = 0; idle < 50 && !td->closed;) {
         if (!td_pump(td, 0.2)) {

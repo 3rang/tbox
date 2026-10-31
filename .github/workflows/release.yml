@@ -4,6 +4,9 @@
 # Release: push a tag like v0.2.0 and this builds tbox for every OS/CPU,
 # bundles libtdjson beside it, and publishes the archives on a GitHub
 # Release. Users download one archive, unpack, run ./tbox login.
+#
+# If the repository secrets TBOX_API_ID and TBOX_API_HASH are set, they are
+# compiled in as defaults so users of the release need not set them.
 
 name: release
 
@@ -42,7 +45,11 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DTBOX_VERSION=${{ steps.ver.outputs.version }}
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          -DTBOX_VERSION=${{ steps.ver.outputs.version }}
+          -DTBOX_API_ID=${{ secrets.TBOX_API_ID }}
+          -DTBOX_API_HASH=${{ secrets.TBOX_API_HASH }}
 
       - name: Build
         run: cmake --build build --config Release --parallel

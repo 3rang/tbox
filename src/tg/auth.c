@@ -132,7 +132,7 @@ AuthResult auth_run(Td *td, const Config *cfg, int interactive, char *err, size_
         switch (a.state) {
         case AUTH_WAIT_PARAMS:
             if (!config_has_credentials(cfg)) {
-                snprintf(err, errlen, "no API credentials; run `tbox login`");
+                snprintf(err, errlen, "no API credentials");
                 result = AUTH_NOT_LOGGED_IN;
                 goto out;
             }
