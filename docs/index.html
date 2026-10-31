@@ -1,0 +1,379 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0
+     Copyright (c) 2026 Tarang Patel
+     tbox project page. One file, no build step: edit and push. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tbox — Telegram from the command line, in plain C</title>
+<meta name="description" content="tbox is a small, readable Telegram client in plain C built on TDLib: log in by QR code, send a message, upload a file, get notified of new messages. Linux, macOS, Windows.">
+<meta property="og:title" content="tbox — Telegram from the command line, in plain C">
+<meta property="og:description" content="Five commands, ~1,100 lines of C, TDLib underneath. Login by QR, send, upload, watch.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://3rang.github.io/tbox/">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Cpath d='M8 11l6 5-6 5' fill='none' stroke='%2334b7ff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3Cpath d='M16 21h8' stroke='%23e6edf3' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfc;
+    --fg: #15181d;
+    --muted: #5b6470;
+    --line: #e4e7eb;
+    --card: #ffffff;
+    --accent: #1a8fd6;
+    --accent-ink: #ffffff;
+    --term-bg: #0b0f14;
+    --term-fg: #e6edf3;
+    --term-dim: #8b96a3;
+    --term-green: #7ee787;
+    --term-blue: #79c0ff;
+    --radius: 14px;
+    --max: 1060px;
+    --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", "DejaVu Sans Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0f14;
+      --fg: #e6edf3;
+      --muted: #9aa4af;
+      --line: #1f2733;
+      --card: #111823;
+      --accent: #34b7ff;
+      --accent-ink: #06202e;
+      --term-bg: #060a0e;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font: 16px/1.6 var(--sans);
+    color: var(--fg);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    overflow-wrap: anywhere; /* long identifiers in prose wrap on phones */
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre, kbd { font-family: var(--mono); font-size: 0.92em; }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+  h1, h2, h3 { line-height: 1.15; letter-spacing: -0.01em; margin: 0; }
+  h2 { font-size: 1.75rem; margin-bottom: 8px; }
+  .lead { color: var(--muted); margin: 0 0 28px; max-width: 60ch; }
+  section { padding: 64px 0; border-top: 1px solid var(--line); }
+
+  /* --- top bar --- */
+  header {
+    position: sticky; top: 0; z-index: 10;
+    backdrop-filter: saturate(160%) blur(10px);
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    border-bottom: 1px solid var(--line);
+  }
+  header .wrap { display: flex; align-items: center; justify-content: space-between; height: 56px; }
+  .brand { font-family: var(--mono); font-weight: 700; font-size: 1.05rem; color: var(--fg); display: flex; align-items: center; gap: 8px; }
+  .brand .cursor { display: inline-block; width: 9px; height: 1.05em; background: var(--accent); animation: blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  nav a { color: var(--muted); margin-left: 22px; font-size: 0.95rem; }
+  nav a:hover { color: var(--fg); text-decoration: none; }
+  @media (max-width: 640px) { nav a:not(.gh) { display: none; } }
+
+  /* --- hero --- */
+  .hero { padding: 72px 0 56px; border-top: 0; position: relative; overflow: hidden; }
+  .hero::before {
+    content: ""; position: absolute; inset: -40% -20% auto auto; width: 70%; height: 120%;
+    background: radial-gradient(closest-side, color-mix(in srgb, var(--accent) 18%, transparent), transparent 70%);
+    pointer-events: none;
+  }
+  .hero .wrap { display: grid; grid-template-columns: 1.05fr 1fr; gap: 48px; align-items: center; position: relative; }
+  @media (max-width: 860px) { .hero .wrap { grid-template-columns: 1fr; } }
+  .hero h1 { font-size: clamp(2.1rem, 4.6vw, 3.3rem); font-weight: 800; letter-spacing: -0.02em; }
+  .hero h1 span { color: var(--accent); }
+  .hero p { color: var(--muted); font-size: 1.1rem; margin: 18px 0 28px; max-width: 48ch; }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 11px 18px; border-radius: 10px; font-weight: 600; font-size: 0.98rem;
+    border: 1px solid var(--line); color: var(--fg); background: var(--card);
+  }
+  .btn:hover { text-decoration: none; border-color: color-mix(in srgb, var(--fg) 25%, var(--line)); }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .btn.primary:hover { filter: brightness(1.07); }
+  .btn small { font-weight: 500; opacity: 0.8; }
+  .meta { margin-top: 18px; color: var(--muted); font-size: 0.9rem; display: flex; gap: 14px; flex-wrap: wrap; }
+  .meta span::before { content: "·"; margin-right: 14px; }
+  .meta span:first-child::before { content: ""; margin: 0; }
+  .alt { font-size: 0.9rem; color: var(--muted); margin-top: 10px; }
+
+  /* --- terminal --- */
+  .term {
+    background: var(--term-bg); color: var(--term-fg);
+    border-radius: var(--radius); border: 1px solid color-mix(in srgb, var(--term-fg) 12%, transparent);
+    box-shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.55);
+    overflow: hidden; font-family: var(--mono); font-size: 13px; line-height: 1.5;
+  }
+  .term .bar { display: flex; gap: 7px; padding: 11px 14px; border-bottom: 1px solid color-mix(in srgb, var(--term-fg) 10%, transparent); }
+  .term .bar i { width: 11px; height: 11px; border-radius: 50%; background: #3a4350; display: block; }
+  .term .bar i:nth-child(1) { background: #ff5f57; } .term .bar i:nth-child(2) { background: #febc2e; } .term .bar i:nth-child(3) { background: #28c840; }
+  .term pre { margin: 0; padding: 16px 18px 18px; overflow-x: auto; white-space: pre; }
+  .term .p { color: var(--term-green); }
+  .term .d { color: var(--term-dim); }
+  .term .b { color: var(--term-blue); }
+  .term .qr { display: inline-block; line-height: 1; letter-spacing: 0; color: #fff; background: #000; padding: 2px 0; margin: 6px 0; font-size: 11px; }
+
+  /* --- cards --- */
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 20px 18px;
+  }
+  .card h3 { font-size: 1.02rem; margin-bottom: 6px; }
+  .card h3 code { font-size: 0.95em; color: var(--accent); }
+  .card p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  .card pre { margin: 12px 0 0; padding: 10px 12px; border-radius: 9px; background: var(--term-bg); color: var(--term-fg); font-size: 12.5px; overflow-x: auto; }
+  .card pre .p { color: var(--term-green); }
+
+  /* --- how --- */
+  .how { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: 28px; align-items: start; }
+  @media (max-width: 860px) { .how { grid-template-columns: 1fr; } }
+  .steps { counter-reset: s; list-style: none; padding: 0; margin: 0 0 22px; }
+  .steps li { position: relative; padding-left: 44px; margin-bottom: 16px; }
+  .steps li::before {
+    counter-increment: s; content: counter(s);
+    position: absolute; left: 0; top: 2px; width: 28px; height: 28px; border-radius: 8px;
+    display: grid; place-items: center; font-weight: 700; font-size: 0.9rem;
+    background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent);
+  }
+  .steps li strong { display: block; }
+  .steps li span { color: var(--muted); }
+  .tree { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; font-family: var(--mono); font-size: 12.8px; line-height: 1.7; white-space: pre; overflow-x: auto; margin: 0; }
+  .tree b { color: var(--accent); font-weight: 600; }
+  .tree i { color: var(--muted); font-style: normal; }
+  .why { margin-top: 28px; }
+
+  /* --- install --- */
+  .install .grid { grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); }
+  .code { background: var(--term-bg); color: var(--term-fg); border-radius: var(--radius); padding: 16px 18px; margin: 0; overflow-x: auto; font-size: 13px; line-height: 1.6; }
+  .code .d { color: var(--term-dim); }
+  .code .p { color: var(--term-green); }
+  .code .v { color: var(--term-blue); }
+  .note { color: var(--muted); font-size: 0.92rem; margin: 10px 0 0; }
+
+  footer { border-top: 1px solid var(--line); padding: 28px 0 40px; color: var(--muted); font-size: 0.9rem; }
+  footer .wrap { display: flex; flex-wrap: wrap; gap: 10px 24px; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <a class="brand" href="#top">tbox<span class="cursor" aria-hidden="true"></span></a>
+    <nav>
+      <a href="#commands">Commands</a>
+      <a href="#how">How it works</a>
+      <a href="#install">Install</a>
+      <a class="gh" href="https://github.com/3rang/tbox">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+<section class="hero">
+  <div class="wrap">
+    <div>
+      <h1>Telegram from the <span>command line</span>, in plain C.</h1>
+      <p>tbox is a small, readable Telegram client built on TDLib. Log in by scanning a QR code, send a message, upload a file, get notified of new ones. Five commands, about 1,100 lines of C — meant to be read as much as run.</p>
+      <div class="actions">
+        <a class="btn primary" id="dl" href="https://github.com/3rang/tbox/releases/latest">Download <small id="dl-for">latest release</small></a>
+        <a class="btn" href="https://github.com/3rang/tbox">View on GitHub</a>
+      </div>
+      <p class="alt" id="dl-alt">Linux x64 / arm64 · macOS Apple silicon / Intel · Windows x64 — <a href="https://github.com/3rang/tbox/releases/latest">all downloads</a></p>
+      <div class="meta"><span>Apache-2.0</span><span>TDLib 1.8.67</span><span>Your session never leaves TDLib's local database</span></div>
+    </div>
+
+    <div class="term" aria-label="Terminal session">
+      <div class="bar"><i></i><i></i><i></i></div>
+<pre><span class="p">$</span> tbox login
+Scan this QR code with Telegram on your phone:
+<span class="d">Settings &gt; Devices &gt; Link Desktop Device</span>
+
+<span class="qr">█████████████████████████████████
+██ ▄▄▄▄▄ █▀██ ▄▄▀██▀ ▄ █ ▄▄▄▄▄ ██
+██ █   █ █▄▀ ██▄▀█▀▀██▀█ █   █ ██
+██ █▄▄▄█ ██ ▄█▀█ ▄▀▀▀ ▀█ █▄▄▄█ ██
+██▄▄▄▄▄▄▄█▄▀ ▀ ▀ ▀▄▀ █ █▄▄▄▄▄▄▄██
+███▄▄ ▀▄▄▀██▄    █▄ ▄▀▀▀▀▀▀▀ ▄▀██
+██▄▄▀▀ ▄▄▀█ ▀▀▀ █▄█▄█▀ █▄██ ▄▄▀██
+██  ▀██▄▄▀▄█▀█▀▀▄▄▀▄▀▀█▄▀ █▀ ▄ ██
+██▀ ▄▀█▀▄▄ ▄▀█▄ ▄ ▀█▀   ▀▄  █▄ ██
+██▄▄▀▄▀█▄▀▄█▀▄▀█▄▄█▄██▀▄█ ▄▄▀▄▄██
+██▄█▄▄▀▄▄█ ▀▀█▄ ▀▀▀▀▀▀▄▀ ▀█▄ ▀███
+███▄██▄█▄█▀▄▀▄ █ ▄   █ ▄▄▄ ▀▄ ▀██
+██ ▄▄▄▄▄ █▀ █ ▀ █▀█▀▄▄ █▄█ █▄ ███
+██ █   █ █▀▄▄██▄ █▄▀█▀▄▄▄▄ ▄  ███
+██ █▄▄▄█ █ ▄█▄▄ ▄▀█▄▀█ ██▄▀▀▄▀▄██
+██▄▄▄▄▄▄▄████▄▄▄▄█████▄▄▄▄█▄█▄███
+█████████████████████████████████</span>
+<span class="d">Waiting for the scan...</span>
+Logged in as Tarang Patel (@tarang), id 123456789
+
+<span class="p">$</span> tbox send @alice "hi from the terminal"
+sent to 987654321 (message 4711)
+
+<span class="p">$</span> tbox watch
+<span class="d">watching... press Ctrl-C to stop</span>
+<span class="b">[23:02]</span> Alice (987654321): are you coming?
+<span class="b">[23:05]</span> Family (-1001234567890) Bob: dinner at 8</pre>
+    </div>
+  </div>
+</section>
+
+<section id="commands">
+  <div class="wrap">
+    <h2>Five commands</h2>
+    <p class="lead">A chat is <code>me</code> (Saved Messages), <code>@username</code>, or the chat id that <code>watch</code> prints. Nothing else to learn.</p>
+    <div class="grid">
+      <div class="card">
+        <h3><code>tbox login</code></h3>
+        <p>Scan a QR code with the Telegram app. Asks your two-step password if you have one. Once.</p>
+        <pre><span class="p">$</span> tbox login</pre>
+      </div>
+      <div class="card">
+        <h3><code>tbox send</code></h3>
+        <p>Send a text message. Waits until Telegram confirms it.</p>
+        <pre><span class="p">$</span> tbox send @alice hello there</pre>
+      </div>
+      <div class="card">
+        <h3><code>tbox upload</code></h3>
+        <p>Send a file as a document, with progress. <code>me</code> drops it into Saved Messages.</p>
+        <pre><span class="p">$</span> tbox upload me backup.tar.gz "weekly"</pre>
+      </div>
+      <div class="card">
+        <h3><code>tbox watch</code></h3>
+        <p>Print new incoming messages as they arrive — from every chat, or one.</p>
+        <pre><span class="p">$</span> tbox watch @alice</pre>
+      </div>
+      <div class="card">
+        <h3><code>tbox logout</code></h3>
+        <p>End the session on Telegram's side and delete the local database.</p>
+        <pre><span class="p">$</span> tbox logout</pre>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2>How it works</h2>
+    <p class="lead">TDLib does the hard parts — MTProto, encryption, the local database. Its C interface is four functions and every byte through them is JSON. tbox is organised along that line.</p>
+    <div class="how">
+      <div>
+        <ol class="steps">
+          <li><strong>Open</strong><span><code>session_open()</code> reads <code>TBOX_API_ID</code>/<code>TBOX_API_HASH</code>, creates a TDLib client and runs the login state machine. With a saved session that is one <code>setTdlibParameters</code> and TDLib answers <code>authorizationStateReady</code>.</span></li>
+          <li><strong>Request</strong><span>The command sends its requests — <code>sendMessage</code>, <code>getChat</code> — and waits for the updates it cares about, such as <code>updateMessageSendSucceeded</code> or <code>updateNewMessage</code>.</span></li>
+          <li><strong>Close</strong><span><code>session_close()</code> sends <code>close</code> and waits for <code>authorizationStateClosed</code>, so TDLib flushes its database.</span></li>
+        </ol>
+        <p class="note">Set <code>TBOX_DEBUG=1</code> to watch the JSON go by (secrets blanked) — the quickest way to learn the TDLib API.</p>
+      </div>
+<pre class="tree">src/
+  main.c           <i>command table</i>
+  <b>core/</b>
+    td.c           <i>four TDLib calls; td_request() = post + wait for reply</i>
+    json.h         <i>ten lines over cJSON: jstr, jint, jobj…</i>
+    config.c       <i>~/.tbox and the API credentials</i>
+    session.c      <i>open / close around each command</i>
+    platform.c     <i>the Windows/POSIX differences</i>
+  <b>tg/</b>
+    auth.c         <i>login state machine</i>
+    qr.c           <i>draws the login link as a QR code</i>
+    chat.c         <i>me / @username / id → chat</i>
+    message.c      <i>message object → one line</i>
+    outbox.c       <i>sendMessage + wait, upload progress</i>
+  <b>cmd/</b>           <i>one file per command</i>
+tests/             <i>a scripted fake TDLib, no network</i></pre>
+    </div>
+
+    <div class="grid why">
+      <div class="card"><h3>Why C</h3><p>Because it is the smallest honest way to show what talking to Telegram actually takes. No runtime, no framework: a few hundred lines you can read in an evening.</p></div>
+      <div class="card"><h3>Why TDLib</h3><p>It is Telegram's own client library. Linked at compile time — prebuilt by default, or compiled from source into one static binary with <code>-DTBOX_TDLIB_FROM_SOURCE=ON</code>.</p></div>
+      <div class="card"><h3>Why QR login</h3><p>The shortest flow TDLib offers: no phone number, no SMS code. TDLib hands over a <code>tg://login</code> link, tbox draws it, your phone confirms.</p></div>
+      <div class="card"><h3>Why cJSON</h3><p>TDLib's C API <em>is</em> JSON. Some parser is unavoidable; one MIT file is less code than writing it yourself.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="install" class="install">
+  <div class="wrap">
+    <h2>Install</h2>
+    <p class="lead">One archive per platform, with the TDLib runtime inside. Unpack and run. Telegram requires an <a href="https://my.telegram.org/apps">api_id and api_hash</a> for every client app — put yours in the environment first.</p>
+    <div class="grid">
+      <div>
+<pre class="code"><span class="d"># Linux / macOS</span>
+export TBOX_API_ID=12345 TBOX_API_HASH=0123456789abcdef…
+v=<span class="v">1.0.0</span>; a=linux-x64   <span class="d"># or linux-arm64, osx-arm64, osx-x64</span>
+curl -L https://github.com/3rang/tbox/releases/download/v$v/tbox-$v-$a.tar.gz | tar xz
+./tbox-$v-$a/bin/tbox login</pre>
+        <p class="note">macOS may quarantine the download: <code>xattr -dr com.apple.quarantine tbox-*</code></p>
+      </div>
+      <div>
+<pre class="code"><span class="d"># Windows (PowerShell)</span>
+$env:TBOX_API_ID = "12345"; $env:TBOX_API_HASH = "0123456789abcdef…"
+Expand-Archive tbox-<span class="v">1.0.0</span>-win-x64.zip
+.\tbox-<span class="v">1.0.0</span>-win-x64\bin\tbox.exe login</pre>
+        <p class="note">Get the zip from the <a href="https://github.com/3rang/tbox/releases/latest">releases page</a>.</p>
+      </div>
+      <div>
+<pre class="code"><span class="d"># From source (CMake 3.18+, any C11 compiler)</span>
+git clone https://github.com/3rang/tbox && cd tbox
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build && ctest --test-dir build
+./build/tbox login</pre>
+        <p class="note">CMake downloads the pinned TDLib for your OS, sha256-checked.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div>© 2026 Tarang Patel · Apache-2.0 · <a href="https://github.com/3rang/tbox/blob/main/THIRD_PARTY_NOTICES.md">third-party notices</a></div>
+    <div>The QR code above was drawn by tbox's own renderer — scan it, it opens this repository.</div>
+  </div>
+</footer>
+
+<script>
+/* Fill in the latest release: version in the snippets and a download
+ * button for the visitor's platform. Degrades to the releases page. */
+(async () => {
+  const repo = "3rang/tbox";
+  try {
+    const rel = await (await fetch(`https://api.github.com/repos/${repo}/releases/latest`)).json();
+    const ver = (rel.tag_name || "").replace(/^v/, "");
+    if (!ver) return;
+    document.querySelectorAll(".v").forEach(e => e.textContent = ver);
+
+    const ua = navigator.userAgent;
+    const arm = /arm|aarch64/i.test(ua);
+    let rid, label;
+    if (/Windows/.test(ua)) { rid = "win-x64"; label = "Windows"; }
+    else if (/Mac/.test(ua)) { rid = "osx-arm64"; label = "macOS (Apple silicon)"; }
+    else if (/Linux/.test(ua)) { rid = arm ? "linux-arm64" : "linux-x64"; label = arm ? "Linux arm64" : "Linux x64"; }
+    else return;
+
+    const asset = rel.assets.find(a => a.name.includes(rid));
+    if (!asset) return;
+    document.getElementById("dl").href = asset.browser_download_url;
+    document.getElementById("dl-for").textContent = `v${ver} for ${label}`;
+    if (rid === "osx-arm64") {
+      const intel = rel.assets.find(a => a.name.includes("osx-x64"));
+      if (intel) document.getElementById("dl-alt").innerHTML =
+        `Intel Mac? <a href="${intel.browser_download_url}">tbox ${ver} for macOS Intel</a> · <a href="${rel.html_url}">all downloads</a>`;
+    }
+  } catch (e) { /* offline or rate-limited: the static links still work */ }
+})();
+</script>
+</body>
+</html>

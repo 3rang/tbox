@@ -3,6 +3,7 @@
 # tbox
 
 Telegram from the command line, in a small amount of plain C.
+Project page: <https://3rang.github.io/tbox/>
 
 `tbox` is a readable example of talking to Telegram with
 [TDLib](https://github.com/tdlib/td) from C, as a normal user account:
@@ -153,6 +154,7 @@ src/
   cmd/              one file per command: login, logout, send, upload, watch
 tests/              a scripted fake libtdjson and the unit tests
 third_party/        cJSON (MIT) and Nayuki's QR encoder (MIT)
+docs/index.html     the project page, published to gh-pages by .github/workflows/pages.yml
 ```
 
 A command runs like this:
