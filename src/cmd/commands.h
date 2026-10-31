@@ -11,5 +11,6 @@ int cmd_login(int argc, char **argv);
 int cmd_logout(int argc, char **argv);
 int cmd_send(int argc, char **argv);
 int cmd_upload(int argc, char **argv);
+int cmd_watch(int argc, char **argv);
 
 #endif

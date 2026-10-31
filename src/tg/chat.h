@@ -33,6 +33,12 @@ int chat_ref_parse(const char *s, ChatRef *out);
 /* Resolve to a chat id, or 0 with err filled. */
 long long chat_resolve(Td *td, const char *ref, char *err, size_t errlen);
 
+/* Title of a chat id (a person's name for private chats), or "?". */
+void chat_title(Td *td, long long chat_id, char *buf, size_t n);
+
+/* Display name of a user id, or "?". */
+void chat_user_display(Td *td, long long user_id, char *buf, size_t n);
+
 /* Display name of a user object: "First Last". Pure. */
 void chat_user_name(const cJSON *user, char *buf, size_t n);
 

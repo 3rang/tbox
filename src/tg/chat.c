@@ -156,3 +156,25 @@ long long chat_resolve(Td *td, const char *ref, char *err, size_t errlen) {
     }
 }
 
+
+/* --- names ---------------------------------------------------------------- */
+
+void chat_title(Td *td, long long chat_id, char *buf, size_t n) {
+    cJSON *req = jreq("getChat");
+    cJSON_AddNumberToObject(req, "chat_id", (double)chat_id);
+    cJSON *r = td_request(td, req, TD_TIMEOUT);
+    snprintf(buf, n, "%s", td_is_error(r) ? "?" : jstr(r, "title"));
+    cJSON_Delete(r);
+}
+
+void chat_user_display(Td *td, long long user_id, char *buf, size_t n) {
+    cJSON *req = jreq("getUser");
+    cJSON_AddNumberToObject(req, "user_id", (double)user_id);
+    cJSON *r = td_request(td, req, TD_TIMEOUT);
+    if (td_is_error(r)) {
+        snprintf(buf, n, "?");
+    } else {
+        chat_user_name(r, buf, n);
+    }
+    cJSON_Delete(r);
+}

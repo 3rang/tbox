@@ -20,6 +20,7 @@ static const struct {
     { "logout", cmd_logout, "logout", "sign out and forget the session" },
     { "send", cmd_send, "send <chat> <text...>", "send a text message" },
     { "upload", cmd_upload, "upload <chat> <file> [caption...]", "send a file" },
+    { "watch", cmd_watch, "watch [chat]", "print new incoming messages as they arrive" },
 };
 
 static void usage(FILE *out) {

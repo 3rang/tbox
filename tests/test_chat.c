@@ -108,6 +108,25 @@ static void test_resolve_id_loads_chats_on_miss(void) {
     CHECK(strstr(err, "4242") != NULL);
 }
 
+static void test_names_from_ids(void) {
+    fake_td_reset();
+    Td td;
+    td_init(&td, fake_td_api());
+    char buf[128];
+    fake_td_on("getChat", "{\"@type\":\"chat\",\"id\":-100,\"title\":\"Family\"}");
+    fake_td_on("getUser", "{\"@type\":\"user\",\"id\":5,\"first_name\":\"Ada\",\"last_name\":\"L\"}");
+    chat_title(&td, -100, buf, sizeof buf);
+    CHECK_STR(buf, "Family");
+    chat_user_display(&td, 5, buf, sizeof buf);
+    CHECK_STR(buf, "Ada L");
+
+    fake_td_reset();
+    td_init(&td, fake_td_api());
+    fake_td_on("getChat", "{\"@type\":\"error\",\"code\":400,\"message\":\"Chat not found\"}");
+    chat_title(&td, 1, buf, sizeof buf);
+    CHECK_STR(buf, "?");
+}
+
 int main(void) {
     test_ref_parse();
     test_names();
@@ -115,5 +134,6 @@ int main(void) {
     test_resolve_username();
     test_resolve_rejects_other_text();
     test_resolve_id_loads_chats_on_miss();
+    test_names_from_ids();
     TEST_MAIN_END();
 }
