@@ -6,8 +6,6 @@
  * `tbox send` and `tbox upload` take. Ctrl-C stops it.
  */
 #include <signal.h>
-#include <stdio.h>
-#include <string.h>
 
 #include "cmd/commands.h"
 #include "core/session.h"
@@ -38,7 +36,7 @@ static void on_update(Td *td, const cJSON *ev, void *user) {
         return;
     }
     const cJSON *msg = jobj(ev, "message");
-    if (message_is_outgoing(msg)) {
+    if (jbool(msg, "is_outgoing")) {
         return;
     }
     if (w->only_chat != 0 && jint(msg, "chat_id") != w->only_chat) {

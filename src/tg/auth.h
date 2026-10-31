@@ -55,9 +55,9 @@ typedef enum AuthResult {
     AUTH_FAILED,           /* err has the reason */
 } AuthResult;
 
-/* Drive the flow until Ready. Draws the QR code and prompts for the
- * password when interactive. Installs its own update handler on td and
- * restores the previous one. */
+/* Drive the flow until Ready; cfg must hold the API credentials. Draws
+ * the QR code and prompts for the password when interactive. Installs
+ * its own update handler on td and restores the previous one. */
 AuthResult auth_run(Td *td, const Config *cfg, int interactive, char *err, size_t errlen);
 
 #endif

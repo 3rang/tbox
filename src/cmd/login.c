@@ -4,8 +4,6 @@
  * tbox login - sign in once by scanning a QR code with the Telegram app;
  * the session is kept in ~/.tbox/tdlib.
  */
-#include <stdio.h>
-
 #include "cmd/commands.h"
 #include "core/session.h"
 #include "tg/chat.h"

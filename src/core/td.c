@@ -7,8 +7,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "core/platform.h"
-
 /* TDLib's C API (td/telegram/td_json_client.h), resolved by the linker. */
 int td_create_client_id(void);
 void td_send(int client_id, const char *request);
@@ -25,13 +23,25 @@ void td_init(Td *td, const TdApi *api) {
     td->api = *api;
     td->debug = getenv("TBOX_DEBUG") != NULL;
 
-    const char *verbosity = getenv("TBOX_TD_VERBOSITY");
-    char req[128];
-    snprintf(req, sizeof req, "{\"@type\":\"setLogVerbosityLevel\",\"new_verbosity_level\":%d}",
-             verbosity != NULL ? atoi(verbosity) : 1);
-    td->api.execute(req);
-
+    /* TDLib's own log: fatal errors only, or also warnings when debugging. */
+    td->api.execute(td->debug ? "{\"@type\":\"setLogVerbosityLevel\",\"new_verbosity_level\":2}"
+                              : "{\"@type\":\"setLogVerbosityLevel\",\"new_verbosity_level\":1}");
     td->client_id = td->api.create_client_id();
+}
+
+/* Echo a request to stderr with the secrets blanked out. */
+static void debug_request(const cJSON *req) {
+    cJSON *copy = cJSON_Duplicate(req, 1);
+    const char *secrets[] = { "password", "api_hash" };
+    for (size_t i = 0; i < sizeof secrets / sizeof secrets[0]; i++) {
+        if (jobj(copy, secrets[i]) != NULL) {
+            cJSON_ReplaceItemInObject(copy, secrets[i], cJSON_CreateString("***"));
+        }
+    }
+    char *text = cJSON_PrintUnformatted(copy);
+    fprintf(stderr, ">> %s\n", text);
+    free(text);
+    cJSON_Delete(copy);
 }
 
 void td_set_update_handler(Td *td, TdUpdateFn fn, void *user) {
@@ -40,16 +50,15 @@ void td_set_update_handler(Td *td, TdUpdateFn fn, void *user) {
 }
 
 void td_post(Td *td, cJSON *req) {
+    if (td->debug) {
+        debug_request(req);
+    }
     char *text = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
-    if (text == NULL) {
-        return;
+    if (text != NULL) {
+        td->api.send(td->client_id, text);
+        free(text);
     }
-    if (td->debug) {
-        fprintf(stderr, ">> %s\n", text);
-    }
-    td->api.send(td->client_id, text);
-    free(text);
 }
 
 cJSON *td_poll(Td *td, double timeout) {
@@ -93,16 +102,13 @@ cJSON *td_request(Td *td, cJSON *req, double timeout) {
     cJSON_AddStringToObject(req, "@extra", extra);
     td_post(td, req);
 
-    /* Poll in short slices until the deadline, but stop as soon as
-     * the reply shows up. */
-    double deadline = platform_now() + timeout;
-    for (;;) {
-        double left = deadline - platform_now();
-        if (left <= 0) {
-            break;
-        }
-        cJSON *ev = td_poll(td, left < 1.0 ? left : 1.0);
+    /* Like every wait in tbox, the timeout is seconds of *silence*: a
+     * stream of updates TDLib is busy delivering does not count. */
+    for (double left = timeout; left > 0 && !td->closed;) {
+        double slice = left < 1.0 ? left : 1.0;
+        cJSON *ev = td_poll(td, slice);
         if (ev == NULL) {
+            left -= slice;
             continue;
         }
         if (strcmp(jstr(ev, "@extra"), extra) == 0) {
@@ -129,10 +135,6 @@ void td_close(Td *td) {
 
 int td_is_error(const cJSON *reply) {
     return reply == NULL || jis(reply, "error");
-}
-
-int td_error_code(const cJSON *reply) {
-    return reply == NULL ? 0 : (int)jint(reply, "code");
 }
 
 const char *td_error_message(const cJSON *reply) {

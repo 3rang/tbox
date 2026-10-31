@@ -17,7 +17,6 @@
 #include <limits.h>
 #include <sys/stat.h>
 #include <termios.h>
-#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -31,19 +30,6 @@ void platform_init(void) {
     if (out != INVALID_HANDLE_VALUE && GetConsoleMode(out, &mode)) {
         SetConsoleMode(out, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
     }
-#endif
-}
-
-double platform_now(void) {
-#ifdef _WIN32
-    LARGE_INTEGER freq, count;
-    QueryPerformanceFrequency(&freq);
-    QueryPerformanceCounter(&count);
-    return (double)count.QuadPart / (double)freq.QuadPart;
-#else
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 #endif
 }
 
@@ -70,16 +56,6 @@ int platform_mkdir(const char *path) {
     }
     struct stat st;
     return (stat(path, &st) == 0 && S_ISDIR(st.st_mode)) ? 0 : -1;
-#endif
-}
-
-int platform_file_exists(const char *path) {
-#ifdef _WIN32
-    DWORD attr = GetFileAttributesA(path);
-    return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
-#else
-    struct stat st;
-    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
 #endif
 }
 

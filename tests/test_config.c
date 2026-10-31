@@ -55,11 +55,11 @@ static void test_credentials_from_environment(void) {
     CHECK_STR(c.api_hash, "envhash");
     CHECK(config_has_credentials(&c));
 
-    /* Half a pair is no pair. */
+    /* Half a pair is no pair (unless this build compiled a default in). */
     set_env("TBOX_API_HASH", "");
     CHECK(config_load(&c, err, sizeof err) == 0);
     CHECK(c.api_id == 7);
-    CHECK(c.api_hash[0] == '\0' || !config_has_credentials(&c) || c.api_hash[0] != '\0');
+    CHECK(config_has_credentials(&c) == (c.api_hash[0] != '\0'));
 
     set_env("TBOX_API_ID", "");
     CHECK(strstr(CONFIG_CREDENTIALS_HELP, "TBOX_API_ID") != NULL);

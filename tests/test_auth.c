@@ -100,20 +100,6 @@ static void test_qr_and_password_states_need_login_too(void) {
     }
 }
 
-static void test_missing_credentials(void) {
-    fake_td_reset();
-    Td td;
-    td_init(&td, fake_td_api());
-    Config c;
-    memset(&c, 0, sizeof c);
-    char err[256] = "";
-
-    fake_td_on("getAuthorizationState", "{\"@type\":\"authorizationStateWaitTdlibParameters\"}");
-    CHECK(auth_run(&td, &c, 0, err, sizeof err) == AUTH_NOT_LOGGED_IN);
-    CHECK(fake_td_count_of("setTdlibParameters") == 0);
-    CHECK(strstr(err, "credentials") != NULL);
-}
-
 static void test_parameter_error_fails(void) {
     fake_td_reset();
     Td td;
@@ -194,7 +180,6 @@ int main(void) {
     test_persisted_session_reaches_ready();
     test_fresh_session_needs_login();
     test_qr_and_password_states_need_login_too();
-    test_missing_credentials();
     test_parameter_error_fails();
     test_unknown_state_is_refused();
     test_interactive_qr_login();

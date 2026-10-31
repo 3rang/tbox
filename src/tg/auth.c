@@ -131,11 +131,6 @@ AuthResult auth_run(Td *td, const Config *cfg, int interactive, char *err, size_
         int seen = a.updates;
         switch (a.state) {
         case AUTH_WAIT_PARAMS:
-            if (!config_has_credentials(cfg)) {
-                snprintf(err, errlen, "no API credentials");
-                result = AUTH_NOT_LOGGED_IN;
-                goto out;
-            }
             r = td_request(td, auth_tdlib_parameters(cfg), TD_TIMEOUT);
             if (td_is_error(r)) {
                 snprintf(err, errlen, "setTdlibParameters: %s", td_error_message(r));

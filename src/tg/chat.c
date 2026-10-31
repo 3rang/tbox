@@ -29,11 +29,6 @@ static int ieq(const char *a, const char *b) {
     return *a == *b;
 }
 
-static const char *strip_prefix(const char *s, const char *prefix) {
-    size_t n = strlen(prefix);
-    return strncmp(s, prefix, n) == 0 ? s + n : NULL;
-}
-
 int chat_ref_parse(const char *s, ChatRef *out) {
     memset(out, 0, sizeof *out);
     if (s == NULL || s[0] == '\0') {
@@ -48,22 +43,18 @@ int chat_ref_parse(const char *s, ChatRef *out) {
         out->id = strtoll(s, NULL, 10);
         return 0;
     }
-    const char *name = NULL;
-    if (s[0] == '@') {
-        name = s + 1;
-    } else if ((name = strip_prefix(s, "https://t.me/")) == NULL &&
-               (name = strip_prefix(s, "http://t.me/")) == NULL &&
-               (name = strip_prefix(s, "t.me/")) == NULL) {
-        name = NULL;
-    }
-    if (name != NULL) {
-        out->kind = CHAT_REF_USERNAME;
-        snprintf(out->text, sizeof out->text, "%s", name);
-        size_t len = strlen(out->text);
-        if (len > 0 && out->text[len - 1] == '/') {
-            out->text[len - 1] = '\0';
+    const char *prefixes[] = { "@", "https://t.me/", "http://t.me/", "t.me/" };
+    for (size_t i = 0; i < sizeof prefixes / sizeof prefixes[0]; i++) {
+        size_t n = strlen(prefixes[i]);
+        if (strncmp(s, prefixes[i], n) == 0) {
+            out->kind = CHAT_REF_USERNAME;
+            snprintf(out->text, sizeof out->text, "%s", s + n);
+            size_t len = strlen(out->text);
+            if (len > 0 && out->text[len - 1] == '/') {
+                out->text[len - 1] = '\0';
+            }
+            return out->text[0] != '\0' ? 0 : -1;
         }
-        return out->text[0] != '\0' ? 0 : -1;
     }
     return -1;
 }
@@ -89,6 +80,13 @@ void chat_user_name(const cJSON *user, char *buf, size_t n) {
 
 /* --- resolution ----------------------------------------------------------- */
 
+/* {"@type": type, key: id} -> reply. Most of TDLib's lookups are this. */
+static cJSON *request_by_id(Td *td, const char *type, const char *key, long long id) {
+    cJSON *req = jreq(type);
+    cJSON_AddNumberToObject(req, key, (double)id);
+    return td_request(td, req, TD_TIMEOUT);
+}
+
 static long long reply_chat_id(cJSON *r, char *err, size_t errlen, const char *what) {
     long long id = 0;
     if (td_is_error(r)) {
@@ -107,11 +105,10 @@ static long long resolve_me(Td *td, char *err, size_t errlen) {
         cJSON_Delete(me);
         return 0;
     }
-    cJSON *req = jreq("createPrivateChat");
-    cJSON_AddNumberToObject(req, "user_id", (double)jint(me, "id"));
-    cJSON_AddBoolToObject(req, "force", 0);
+    long long my_id = jint(me, "id");
     cJSON_Delete(me);
-    return reply_chat_id(td_request(td, req, TD_TIMEOUT), err, errlen, "Saved Messages");
+    return reply_chat_id(request_by_id(td, "createPrivateChat", "user_id", my_id), err, errlen,
+                         "Saved Messages");
 }
 
 static long long resolve_username(Td *td, const char *name, char *err, size_t errlen) {
@@ -121,22 +118,19 @@ static long long resolve_username(Td *td, const char *name, char *err, size_t er
 }
 
 static long long resolve_id(Td *td, long long id, char *err, size_t errlen) {
-    for (int attempt = 0; attempt < 2; attempt++) {
-        cJSON *req = jreq("getChat");
-        cJSON_AddNumberToObject(req, "chat_id", (double)id);
-        cJSON *r = td_request(td, req, TD_TIMEOUT);
-        if (!td_is_error(r)) {
-            cJSON_Delete(r);
-            return id;
-        }
+    cJSON *r = request_by_id(td, "getChat", "chat_id", id);
+    if (td_is_error(r)) {
+        /* A fresh session knows no chats yet: load the list and retry once. */
         cJSON_Delete(r);
-        /* A fresh session knows no chats yet: load the main list and retry. */
-        cJSON *load = jreq("loadChats");
-        cJSON_AddNumberToObject(load, "limit", 200);
-        cJSON_Delete(td_request(td, load, TD_TIMEOUT));
+        cJSON_Delete(request_by_id(td, "loadChats", "limit", 200));
+        r = request_by_id(td, "getChat", "chat_id", id);
     }
-    snprintf(err, errlen, "chat %lld not found (is it in your chat list?)", id);
-    return 0;
+    int found = !td_is_error(r);
+    cJSON_Delete(r);
+    if (!found) {
+        snprintf(err, errlen, "chat %lld not found (is it in your chat list?)", id);
+    }
+    return found ? id : 0;
 }
 
 long long chat_resolve(Td *td, const char *ref, char *err, size_t errlen) {
@@ -156,21 +150,16 @@ long long chat_resolve(Td *td, const char *ref, char *err, size_t errlen) {
     }
 }
 
-
 /* --- names ---------------------------------------------------------------- */
 
 void chat_title(Td *td, long long chat_id, char *buf, size_t n) {
-    cJSON *req = jreq("getChat");
-    cJSON_AddNumberToObject(req, "chat_id", (double)chat_id);
-    cJSON *r = td_request(td, req, TD_TIMEOUT);
+    cJSON *r = request_by_id(td, "getChat", "chat_id", chat_id);
     snprintf(buf, n, "%s", td_is_error(r) ? "?" : jstr(r, "title"));
     cJSON_Delete(r);
 }
 
 void chat_user_display(Td *td, long long user_id, char *buf, size_t n) {
-    cJSON *req = jreq("getUser");
-    cJSON_AddNumberToObject(req, "user_id", (double)user_id);
-    cJSON *r = td_request(td, req, TD_TIMEOUT);
+    cJSON *r = request_by_id(td, "getUser", "user_id", user_id);
     if (td_is_error(r)) {
         snprintf(buf, n, "?");
     } else {

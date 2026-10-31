@@ -36,7 +36,7 @@ struct Td {
     int client_id;
     long seq;              /* @extra counter */
     int closed;            /* authorizationStateClosed was seen */
-    int debug;             /* TBOX_DEBUG: echo every JSON in/out to stderr */
+    int debug;             /* TBOX_DEBUG: echo JSON in/out (secrets blanked), TDLib warnings */
     TdUpdateFn on_update;
     void *on_update_user;
 };
@@ -61,19 +61,18 @@ cJSON *td_poll(Td *td, double timeout);
 int td_pump(Td *td, double timeout);
 
 /* Send req and return its reply (may be an "error" object). Takes
- * ownership of req. Updates seen meanwhile go to the handler. NULL if no
- * reply arrived within timeout seconds. Caller frees. */
+ * ownership of req. Updates seen meanwhile go to the handler. NULL after
+ * timeout seconds of silence or once TDLib has closed. Caller frees. */
 cJSON *td_request(Td *td, cJSON *req, double timeout);
 
 /* Ask TDLib to close and wait until it has. Flushes its database. */
 void td_close(Td *td);
 
-/* Reply inspection. */
+/* Reply inspection; both accept NULL (a timeout). */
 int td_is_error(const cJSON *reply);
-int td_error_code(const cJSON *reply);
 const char *td_error_message(const cJSON *reply);
 
-/* Default wait for a network round trip, in seconds. */
+/* Default wait for a reply, in seconds of silence. */
 #define TD_TIMEOUT 30.0
 
 #endif

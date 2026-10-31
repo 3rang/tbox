@@ -41,9 +41,7 @@ static void on_update(Td *td, const cJSON *ev, void *user) {
     } else if (jis(ev, "updateMessageSendFailed")) {
         if (jint(ev, "old_message_id") == o->old_message_id) {
             o->failed = 1;
-            const cJSON *error = jobj(ev, "error");
-            /* TDLib < 1.8.14 used error_message instead of an error object. */
-            const char *msg = error != NULL ? jstr(error, "message") : jstr(ev, "error_message");
+            const char *msg = jstr(jobj(ev, "error"), "message");
             snprintf(o->err, sizeof o->err, "%s", msg[0] != '\0' ? msg : "send failed");
         }
     } else if (jis(ev, "updateFile") && o->file_id > 0) {
@@ -54,19 +52,31 @@ static void on_update(Td *td, const cJSON *ev, void *user) {
     }
 }
 
-long long outbox_wait(Td *td, long long old_message_id, long long file_id, double timeout,
-                      char *err, size_t errlen) {
+long long outbox_send(Td *td, long long chat_id, cJSON *content, char *err, size_t errlen) {
+    cJSON *req = jreq("sendMessage");
+    cJSON_AddNumberToObject(req, "chat_id", (double)chat_id);
+    cJSON_AddItemToObject(req, "input_message_content", content);
+
+    cJSON *r = td_request(td, req, TD_TIMEOUT);
+    if (td_is_error(r)) {
+        snprintf(err, errlen, "sendMessage: %s", td_error_message(r));
+        cJSON_Delete(r);
+        return 0;
+    }
+
     Outbox o;
     memset(&o, 0, sizeof o);
-    o.old_message_id = old_message_id;
-    o.file_id = file_id;
+    o.old_message_id = jint(r, "id");
+    /* Present for a document; 0 for text, which has nothing to upload. */
+    o.file_id = jint(jobj(jobj(jobj(r, "content"), "document"), "document"), "id");
+    cJSON_Delete(r);
 
     TdUpdateFn old_fn = td->on_update;
     void *old_user = td->on_update_user;
     td_set_update_handler(td, on_update, &o);
 
     /* Only silence counts against the timeout; progress updates do not. */
-    for (double left = timeout; left > 0 && o.final_id == 0 && !o.failed;) {
+    for (double left = 120.0; left > 0 && o.final_id == 0 && !o.failed && !td->closed;) {
         if (!td_pump(td, 0.5)) {
             left -= 0.5;
         }

@@ -3,20 +3,12 @@
  */
 #include "tg/message.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 #include "core/json.h"
-
-static void with_caption(const char *tag, const cJSON *content, char *buf, size_t n) {
-    const char *caption = jstr(jobj(content, "caption"), "text");
-    if (caption[0] != '\0') {
-        snprintf(buf, n, "[%s] %s", tag, caption);
-    } else {
-        snprintf(buf, n, "[%s]", tag);
-    }
-}
 
 void message_text(const cJSON *msg, char *buf, size_t n) {
     const cJSON *content = jobj(msg, "content");
@@ -24,28 +16,24 @@ void message_text(const cJSON *msg, char *buf, size_t n) {
 
     if (strcmp(t, "messageText") == 0) {
         snprintf(buf, n, "%s", jstr(jobj(content, "text"), "text"));
-    } else if (strcmp(t, "messageDocument") == 0) {
-        char tag[300];
-        snprintf(tag, sizeof tag, "file %s", jstr(jobj(content, "document"), "file_name"));
-        with_caption(tag, content, buf, n);
-    } else if (strcmp(t, "messagePhoto") == 0) {
-        with_caption("photo", content, buf, n);
-    } else if (strcmp(t, "messageVideo") == 0) {
-        with_caption("video", content, buf, n);
-    } else if (strcmp(t, "messageAudio") == 0) {
-        with_caption("audio", content, buf, n);
-    } else if (strcmp(t, "messageVoiceNote") == 0) {
-        with_caption("voice", content, buf, n);
-    } else if (strcmp(t, "messageAnimation") == 0) {
-        with_caption("gif", content, buf, n);
-    } else if (strcmp(t, "messageSticker") == 0) {
-        snprintf(buf, n, "[sticker %s]", jstr(jobj(content, "sticker"), "emoji"));
-    } else if (strncmp(t, "message", 7) == 0) {
-        /* messageCall -> [call], messageChatAddMembers -> [chatAddMembers] */
-        snprintf(buf, n, "[%c%s]", (char)(t[7] | 0x20), t + 8);
-    } else {
-        snprintf(buf, n, "[?]");
+        return;
     }
+    if (strncmp(t, "message", 7) != 0 || t[7] == '\0') {
+        snprintf(buf, n, "[?]");
+        return;
+    }
+    /* Every other kind becomes a tag from its type name - messagePhoto ->
+     * [photo], messageVoiceNote -> [voiceNote] - plus what identifies it
+     * (file name, sticker emoji) and the caption, if any. */
+    const char *detail = "";
+    if (strcmp(t, "messageDocument") == 0) {
+        detail = jstr(jobj(content, "document"), "file_name");
+    } else if (strcmp(t, "messageSticker") == 0) {
+        detail = jstr(jobj(content, "sticker"), "emoji");
+    }
+    const char *caption = jstr(jobj(content, "caption"), "text");
+    snprintf(buf, n, "[%c%s%s%s]%s%s", (char)tolower((unsigned char)t[7]), t + 8,
+             detail[0] != '\0' ? " " : "", detail, caption[0] != '\0' ? " " : "", caption);
 }
 
 void message_sender(const cJSON *msg, long long *user_id, long long *chat_id) {
@@ -68,8 +56,4 @@ void message_time(long long unix_time, char *buf, size_t n) {
     localtime_r(&t, &tmv);
 #endif
     strftime(buf, n, "%Y-%m-%d %H:%M", &tmv);
-}
-
-int message_is_outgoing(const cJSON *msg) {
-    return jbool(msg, "is_outgoing");
 }

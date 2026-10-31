@@ -4,8 +4,6 @@
  * tbox logout - end the session on Telegram's side and wipe the local
  * TDLib database (TDLib does that itself on logOut).
  */
-#include <stdio.h>
-
 #include "cmd/commands.h"
 #include "core/session.h"
 
@@ -24,19 +22,12 @@ int cmd_logout(int argc, char **argv) {
     cJSON *r = td_request(&s.td, jreq("logOut"), TD_TIMEOUT);
     if (td_is_error(r)) {
         fprintf(stderr, "error: logOut: %s\n", td_error_message(r));
-        cJSON_Delete(r);
-        session_close(&s);
-        return EXIT_ERROR;
+        rc = EXIT_ERROR;
+    } else {
+        printf("Logged out.\n");
     }
     cJSON_Delete(r);
-
-    /* logOut ends in authorizationStateClosed; wait for it. */
-    for (int idle = 0; idle < 60 && !s.td.closed;) {
-        if (!td_pump(&s.td, 0.5)) {
-            idle++;
-        }
-    }
-    session_close(&s); /* no-op once closed */
-    printf("Logged out.\n");
-    return EXIT_OK;
+    /* logOut ends in authorizationStateClosed on its own; this waits for it. */
+    session_close(&s);
+    return rc;
 }

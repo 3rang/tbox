@@ -69,9 +69,20 @@ static void test_error_reply(void) {
     fake_td_on("getChat", "{\"@type\":\"error\",\"code\":400,\"message\":\"Chat not found\"}");
     cJSON *r = td_request(&td, jreq("getChat"), 1.0);
     CHECK(td_is_error(r));
-    CHECK(td_error_code(r) == 400);
     CHECK_STR(td_error_message(r), "Chat not found");
     cJSON_Delete(r);
+}
+
+static void test_request_gives_up_once_closed(void) {
+    fake_td_reset();
+    Td td;
+    td_init(&td, fake_td_api());
+    /* The session dies while we wait: no point in waiting out the timeout. */
+    fake_td_push("{\"@type\":\"updateAuthorizationState\",\"authorization_state\":"
+                 "{\"@type\":\"authorizationStateClosed\"}}");
+    cJSON *r = td_request(&td, jreq("getMe"), 60.0);
+    CHECK(r == NULL);
+    CHECK(td.closed);
 }
 
 static void test_close_waits_for_closed_state(void) {
@@ -93,6 +104,7 @@ int main(void) {
     test_request_matches_extra_and_dispatches_updates();
     test_request_without_reply_times_out();
     test_error_reply();
+    test_request_gives_up_once_closed();
     test_close_waits_for_closed_state();
     TEST_MAIN_END();
 }

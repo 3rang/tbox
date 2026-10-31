@@ -35,7 +35,7 @@ static void usage(FILE *out) {
             "  TBOX_HOME       data directory (default ~/.tbox)\n"
             "  TBOX_API_ID, TBOX_API_HASH\n"
             "                  your Telegram API credentials (https://my.telegram.org/apps)\n"
-            "  TBOX_DEBUG=1    print every JSON message exchanged with TDLib\n"
+            "  TBOX_DEBUG=1    show the JSON exchanged with TDLib and TDLib's warnings\n"
             "\nexit codes: 0 ok, 1 error, 2 usage, 3 not logged in\n");
 }
 

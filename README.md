@@ -149,7 +149,7 @@ src/
     qr.c            draws the tg://login link as a QR code in the terminal
     chat.c          me / @username / id -> chat id; names of chats and users
     message.c       a message object -> one line of text
-    outbox.c        waits for updateMessageSendSucceeded; upload progress
+    outbox.c        sendMessage + wait for updateMessageSendSucceeded; upload progress
   cmd/              one file per command: login, logout, send, upload, watch
 tests/              a scripted fake libtdjson and the unit tests
 third_party/        cJSON (MIT) and Nayuki's QR encoder (MIT)
@@ -166,8 +166,9 @@ A command runs like this:
 3. `session_close()` sends `close` and waits for
    `authorizationStateClosed` so TDLib flushes its database.
 
-Set `TBOX_DEBUG=1` to see every JSON message going in and out - the
-quickest way to learn the TDLib API.
+Set `TBOX_DEBUG=1` to see every JSON message going in and out (passwords
+and the api_hash blanked) plus TDLib's own warnings - the quickest way to
+learn the TDLib API.
 
 ### Why cJSON?
 

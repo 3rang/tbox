@@ -35,9 +35,6 @@ int qr_render(const char *text, FILE *out) {
         for (int x = -QUIET_ZONE; x < size + QUIET_ZONE; x++) {
             bool top_dark = module_at(qr, size, x, y);
             bool bottom_dark = module_at(qr, size, x, y + 1);
-            if (y + 1 >= size + QUIET_ZONE) {
-                bottom_dark = false;
-            }
             if (!top_dark && !bottom_dark) {
                 fputs("\xE2\x96\x88", out); /* █ both light */
             } else if (!top_dark) {

@@ -22,10 +22,13 @@ static void test_text(void) {
 
     text_of("{\"content\":{\"@type\":\"messageDocument\",\"document\":{\"file_name\":\"a.pdf\"},"
             "\"caption\":{\"text\":\"the report\"}}}", buf, sizeof buf);
-    CHECK_STR(buf, "[file a.pdf] the report");
+    CHECK_STR(buf, "[document a.pdf] the report");
 
     text_of("{\"content\":{\"@type\":\"messagePhoto\",\"caption\":{\"text\":\"\"}}}", buf, sizeof buf);
     CHECK_STR(buf, "[photo]");
+
+    text_of("{\"content\":{\"@type\":\"messageVoiceNote\",\"caption\":{\"text\":\"listen\"}}}", buf, sizeof buf);
+    CHECK_STR(buf, "[voiceNote] listen");
 
     text_of("{\"content\":{\"@type\":\"messageSticker\",\"sticker\":{\"emoji\":\"X\"}}}", buf, sizeof buf);
     CHECK_STR(buf, "[sticker X]");
@@ -66,17 +69,9 @@ static void test_time(void) {
     CHECK(strncmp(buf, "2023-11-1", 9) == 0);
 }
 
-static void test_outgoing(void) {
-    cJSON *m = cJSON_Parse("{\"is_outgoing\":true}");
-    CHECK(message_is_outgoing(m) == 1);
-    cJSON_Delete(m);
-    CHECK(message_is_outgoing(NULL) == 0);
-}
-
 int main(void) {
     test_text();
     test_sender();
     test_time();
-    test_outgoing();
     TEST_MAIN_END();
 }
