@@ -47,7 +47,7 @@ jobs:
           ./stage/bin/tbox --version
           export TBOX_HOME="$RUNNER_TEMP/tbox-home"
           set +e
-          ./stage/bin/tbox me
+          ./stage/bin/tbox send me hello
           rc=$?
           set -e
           test "$rc" -eq 3 || { echo "expected exit 3 (not logged in), got $rc"; exit 1; }
