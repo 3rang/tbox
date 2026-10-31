@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Tarang Patel
  */
-#include "td.h"
+#include "core/td.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "platform.h"
+#include "core/platform.h"
 
 static int try_load(const char *path, TdApi *api, char *err, size_t errlen) {
     void *h = platform_dlopen(path, err, errlen);

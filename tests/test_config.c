@@ -4,8 +4,8 @@
  * test_config.c - the config file, the environment and the data directory.
  */
 #include "check.h"
-#include "config.h"
-#include "platform.h"
+#include "core/config.h"
+#include "core/platform.h"
 
 static void set_env(const char *name, const char *value) {
 #ifdef _WIN32

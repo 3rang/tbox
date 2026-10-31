@@ -5,7 +5,7 @@
  */
 #include "check.h"
 #include "fake_td.h"
-#include "outbox.h"
+#include "tg/outbox.h"
 
 static void test_success(void) {
     fake_td_reset();

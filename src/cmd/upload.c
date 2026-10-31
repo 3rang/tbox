@@ -8,11 +8,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "chat.h"
-#include "commands.h"
-#include "outbox.h"
-#include "platform.h"
-#include "session.h"
+#include "tg/chat.h"
+#include "cmd/commands.h"
+#include "tg/outbox.h"
+#include "core/platform.h"
+#include "core/session.h"
 
 static void join_caption(int argc, char **argv, char *buf, size_t n) {
     buf[0] = '\0';

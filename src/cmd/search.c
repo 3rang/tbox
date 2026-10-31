@@ -7,9 +7,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "chat.h"
-#include "commands.h"
-#include "session.h"
+#include "tg/chat.h"
+#include "cmd/commands.h"
+#include "core/session.h"
 
 #define MAX_RESULTS 64
 

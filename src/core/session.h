@@ -8,8 +8,8 @@
 #ifndef TBOX_SESSION_H
 #define TBOX_SESSION_H
 
-#include "config.h"
-#include "td.h"
+#include "core/config.h"
+#include "core/td.h"
 
 typedef struct Session {
     Config cfg;

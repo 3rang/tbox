@@ -40,14 +40,14 @@ endif()
 
 # --- core: everything a command needs, without main() -----------------------
 add_library(tbox_core STATIC
-  src/td.c
-  src/config.c
-  src/auth.c
-  src/chat.c
-  src/message.c
-  src/outbox.c
-  src/session.c
-  src/platform.c
+  src/core/td.c
+  src/core/config.c
+  src/core/session.c
+  src/core/platform.c
+  src/tg/auth.c
+  src/tg/chat.c
+  src/tg/message.c
+  src/tg/outbox.c
 )
 target_include_directories(tbox_core PUBLIC src)
 target_link_libraries(tbox_core PUBLIC cjson)
@@ -59,13 +59,13 @@ endif()
 # --- the executable ----------------------------------------------------------
 add_executable(tbox
   src/main.c
-  src/cmd_login.c
-  src/cmd_logout.c
-  src/cmd_me.c
-  src/cmd_search.c
-  src/cmd_send.c
-  src/cmd_read.c
-  src/cmd_upload.c
+  src/cmd/login.c
+  src/cmd/logout.c
+  src/cmd/me.c
+  src/cmd/search.c
+  src/cmd/send.c
+  src/cmd/read.c
+  src/cmd/upload.c
 )
 target_link_libraries(tbox PRIVATE tbox_core)
 

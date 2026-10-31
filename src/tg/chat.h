@@ -14,7 +14,7 @@
 #include <stddef.h>
 
 #include "cJSON.h"
-#include "td.h"
+#include "core/td.h"
 
 typedef enum ChatRefKind {
     CHAT_REF_ME,

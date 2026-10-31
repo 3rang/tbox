@@ -5,9 +5,9 @@
  */
 #include <stdio.h>
 
-#include "chat.h"
-#include "commands.h"
-#include "session.h"
+#include "tg/chat.h"
+#include "cmd/commands.h"
+#include "core/session.h"
 
 int print_me(Td *td) {
     cJSON *me = td_request(td, jreq("getMe"), TD_TIMEOUT);

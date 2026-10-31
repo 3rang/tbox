@@ -8,10 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "chat.h"
-#include "commands.h"
-#include "message.h"
-#include "session.h"
+#include "tg/chat.h"
+#include "cmd/commands.h"
+#include "tg/message.h"
+#include "core/session.h"
 
 #define MAX_MESSAGES 1000
 

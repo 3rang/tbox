@@ -7,7 +7,7 @@
 #ifndef TBOX_COMMANDS_H
 #define TBOX_COMMANDS_H
 
-#include "td.h"
+#include "core/td.h"
 
 int cmd_login(int argc, char **argv);
 int cmd_logout(int argc, char **argv);

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Tarang Patel
  */
-#include "platform.h"
+#include "core/platform.h"
 
 #include <stdint.h>
 #include <stdio.h>

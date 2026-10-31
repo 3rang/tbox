@@ -6,7 +6,7 @@
 #include <ctype.h>
 
 #include "check.h"
-#include "message.h"
+#include "tg/message.h"
 
 static void text_of(const char *json, char *buf, size_t n) {
     cJSON *m = cJSON_Parse(json);

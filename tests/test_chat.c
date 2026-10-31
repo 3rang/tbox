@@ -3,7 +3,7 @@
  *
  * test_chat.c - chat references and their resolution.
  */
-#include "chat.h"
+#include "tg/chat.h"
 #include "check.h"
 #include "fake_td.h"
 

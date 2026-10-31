@@ -11,9 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "commands.h"
-#include "platform.h"
-#include "session.h"
+#include "cmd/commands.h"
+#include "core/platform.h"
+#include "core/session.h"
 
 static int ask_credentials(Config *cfg) {
     char line[sizeof cfg->api_hash];

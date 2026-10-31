@@ -20,7 +20,7 @@
 #include <stddef.h>
 
 #include "cJSON.h"
-#include "json.h"
+#include "core/json.h"
 
 typedef struct TdApi {
     int (*create_client_id)(void);

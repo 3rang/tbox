@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Tarang Patel
  */
-#include "outbox.h"
+#include "tg/outbox.h"
 
 #include <stdio.h>
 #include <string.h>

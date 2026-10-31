@@ -23,8 +23,8 @@
 #include <stddef.h>
 
 #include "cJSON.h"
-#include "config.h"
-#include "td.h"
+#include "core/config.h"
+#include "core/td.h"
 
 typedef enum AuthState {
     AUTH_UNKNOWN = 0,

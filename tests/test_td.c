@@ -5,7 +5,7 @@
  */
 #include "check.h"
 #include "fake_td.h"
-#include "td.h"
+#include "core/td.h"
 
 static int updates_seen;
 static char last_update_type[64];

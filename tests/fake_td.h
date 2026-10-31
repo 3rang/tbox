@@ -11,7 +11,7 @@
 #define TBOX_FAKE_TD_H
 
 #include "cJSON.h"
-#include "td.h"
+#include "core/td.h"
 
 /* Forget scripts, queued events and sent requests. */
 void fake_td_reset(void);

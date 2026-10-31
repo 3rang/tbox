@@ -6,9 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "commands.h"
-#include "platform.h"
-#include "session.h"
+#include "cmd/commands.h"
+#include "core/platform.h"
+#include "core/session.h"
 
 static const struct {
     const char *name;

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Tarang Patel
  */
-#include "chat.h"
+#include "tg/chat.h"
 
 #include <ctype.h>
 #include <stdio.h>

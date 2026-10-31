@@ -7,10 +7,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "chat.h"
-#include "commands.h"
-#include "outbox.h"
-#include "session.h"
+#include "tg/chat.h"
+#include "cmd/commands.h"
+#include "tg/outbox.h"
+#include "core/session.h"
 
 /* argv[1..] joined with single spaces. Caller frees. */
 static char *join_text(int argc, char **argv) {

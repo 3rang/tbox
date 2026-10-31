@@ -131,7 +131,7 @@ along that line:
 
 | File | Role |
 |---|---|
-| [`src/td.c`](src/td.c) | loads `libtdjson` at run time, `td_request()` = send + wait for the matching reply, hands updates to a handler |
+| [`src/core/td.c`](src/core/td.c) | loads `libtdjson` at run time, `td_request()` = send + wait for the matching reply, hands updates to a handler |
 | [`src/auth.c`](src/auth.c) | the login state machine: `WaitTdlibParameters → WaitPhoneNumber → WaitCode → WaitPassword → Ready` |
 | [`src/config.c`](src/config.c) | `~/.tbox`, the config file and the environment |
 | [`src/chat.c`](src/chat.c) | `@username` / id / `me` / title → chat id |

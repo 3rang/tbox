@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Tarang Patel
  */
-#include "auth.h"
+#include "tg/auth.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include "platform.h"
+#include "core/platform.h"
 
 static const struct {
     const char *type;

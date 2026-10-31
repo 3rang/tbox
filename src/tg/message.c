@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Tarang Patel
  */
-#include "message.h"
+#include "tg/message.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
-#include "json.h"
+#include "core/json.h"
 
 static void with_caption(const char *tag, const cJSON *content, char *buf, size_t n) {
     const char *caption = jstr(jobj(content, "caption"), "text");

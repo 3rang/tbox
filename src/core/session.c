@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Tarang Patel
  */
-#include "session.h"
+#include "core/session.h"
 
 #include <stdio.h>
 #include <string.h>
 
-#include "auth.h"
+#include "tg/auth.h"
 
 int session_open(Session *s, int interactive) {
     char err[4096];

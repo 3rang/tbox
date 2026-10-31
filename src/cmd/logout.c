@@ -6,8 +6,8 @@
  */
 #include <stdio.h>
 
-#include "commands.h"
-#include "session.h"
+#include "cmd/commands.h"
+#include "core/session.h"
 
 int cmd_logout(int argc, char **argv) {
     (void)argv;

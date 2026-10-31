@@ -14,7 +14,7 @@
 
 #include <stddef.h>
 
-#include "td.h"
+#include "core/td.h"
 
 /* Block until the message with temporary id `old_message_id` is sent.
  * file_id > 0 enables a progress line for that file's upload.

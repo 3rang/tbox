@@ -3,7 +3,7 @@
  *
  * test_auth.c - the login state machine, driven non-interactively.
  */
-#include "auth.h"
+#include "tg/auth.h"
 #include "check.h"
 #include "fake_td.h"
 
