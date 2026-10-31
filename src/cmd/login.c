@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright (c) 2026 Tarang Patel
  *
- * tbox login - sign in once; the session is kept in ~/.tbox/tdlib.
+ * tbox login - sign in once by scanning a QR code with the Telegram app;
+ * the session is kept in ~/.tbox/tdlib.
  *
  * Needs the API credentials of an application registered at
  * https://my.telegram.org/apps. They are asked for the first time and

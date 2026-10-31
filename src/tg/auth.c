@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "core/platform.h"
+#include "tg/qr.h"
 
 static const struct {
     const char *type;
@@ -15,9 +16,8 @@ static const struct {
 } STATES[] = {
     { "authorizationStateWaitTdlibParameters", AUTH_WAIT_PARAMS },
     { "authorizationStateWaitPhoneNumber", AUTH_WAIT_PHONE },
-    { "authorizationStateWaitCode", AUTH_WAIT_CODE },
+    { "authorizationStateWaitOtherDeviceConfirmation", AUTH_WAIT_QR },
     { "authorizationStateWaitPassword", AUTH_WAIT_PASSWORD },
-    { "authorizationStateWaitRegistration", AUTH_WAIT_REGISTRATION },
     { "authorizationStateReady", AUTH_READY },
     { "authorizationStateLoggingOut", AUTH_LOGGING_OUT },
     { "authorizationStateClosing", AUTH_CLOSING },
@@ -25,8 +25,8 @@ static const struct {
 };
 
 static const char *NAMES[] = {
-    "unknown", "wait-parameters", "wait-phone", "wait-code", "wait-password",
-    "wait-registration", "wait-other", "ready", "logging-out", "closing", "closed",
+    "unknown", "wait-parameters", "wait-phone", "wait-qr", "wait-password",
+    "wait-other", "ready", "logging-out", "closing", "closed",
 };
 
 AuthState auth_state_from_type(const char *type) {
@@ -65,13 +65,16 @@ cJSON *auth_tdlib_parameters(const Config *cfg) {
 
 typedef struct AuthCtx {
     AuthState state;
-    cJSON *state_obj;     /* last authorizationState object, for hints */
+    cJSON *state_obj;     /* last authorizationState object: link, hint */
+    int updates;          /* counts updateAuthorizationState, so a new QR
+                             link in the same state is noticed too */
 } AuthCtx;
 
 static void set_state(AuthCtx *a, const cJSON *st) {
     cJSON_Delete(a->state_obj);
     a->state_obj = cJSON_Duplicate(st, 1);
     a->state = auth_state_from_type(jtype(st));
+    a->updates++;
 }
 
 static void on_update(Td *td, const cJSON *ev, void *user) {
@@ -81,31 +84,15 @@ static void on_update(Td *td, const cJSON *ev, void *user) {
     }
 }
 
-/* Pump until the state differs from `before`. 1 on change, 0 on timeout. */
-static int wait_for_change(Td *td, AuthCtx *a, AuthState before, double timeout) {
-    for (double left = timeout; left > 0 && a->state == before;) {
+/* Pump until another authorization update arrives. Only silence counts
+ * against the timeout. 1 on update, 0 on timeout. */
+static int wait_for_update(Td *td, AuthCtx *a, int seen, double timeout) {
+    for (double left = timeout; left > 0 && a->updates == seen;) {
         if (!td_pump(td, 0.5)) {
             left -= 0.5;
         }
     }
-    return a->state != before;
-}
-
-static const char *code_destination(const cJSON *state_obj) {
-    const char *t = jtype(jobj(jobj(state_obj, "code_info"), "type"));
-    if (strcmp(t, "authenticationCodeTypeTelegramMessage") == 0) {
-        return "your other Telegram app";
-    }
-    if (strcmp(t, "authenticationCodeTypeSms") == 0) {
-        return "SMS";
-    }
-    if (strcmp(t, "authenticationCodeTypeCall") == 0) {
-        return "a phone call";
-    }
-    if (strcmp(t, "authenticationCodeTypeFlashCall") == 0) {
-        return "a flash call (the code is the caller's number)";
-    }
-    return "Telegram";
+    return a->updates != seen;
 }
 
 /* Send a step of the flow and report TDLib's answer. 0 = accepted. */
@@ -121,12 +108,13 @@ static int step(Td *td, cJSON *req) {
 }
 
 AuthResult auth_run(Td *td, const Config *cfg, int interactive, char *err, size_t errlen) {
-    AuthCtx a = { AUTH_UNKNOWN, NULL };
+    AuthCtx a = { AUTH_UNKNOWN, NULL, 0 };
     TdUpdateFn old_fn = td->on_update;
     void *old_user = td->on_update_user;
     td_set_update_handler(td, on_update, &a);
 
     AuthResult result = AUTH_FAILED;
+    char shown_link[1024] = "";
     char line[256];
 
     /* The first request wakes the client up; its reply is the state. */
@@ -140,7 +128,7 @@ AuthResult auth_run(Td *td, const Config *cfg, int interactive, char *err, size_
     cJSON_Delete(r);
 
     for (;;) {
-        AuthState before = a.state;
+        int seen = a.updates;
         switch (a.state) {
         case AUTH_WAIT_PARAMS:
             if (!config_has_credentials(cfg)) {
@@ -162,33 +150,29 @@ AuthResult auth_run(Td *td, const Config *cfg, int interactive, char *err, size_
                 result = AUTH_NOT_LOGGED_IN;
                 goto out;
             }
-            if (platform_read_line("Phone number (international format, e.g. +41791234567): ",
-                                   line, sizeof line) != 0 || line[0] == '\0') {
-                snprintf(err, errlen, "login aborted");
-                goto out;
-            }
-            cJSON *req = jreq("setAuthenticationPhoneNumber");
-            cJSON_AddStringToObject(req, "phone_number", line);
+            cJSON *req = jreq("requestQrCodeAuthentication");
+            cJSON_AddItemToObject(req, "other_user_ids", cJSON_CreateArray());
             if (step(td, req) != 0) {
-                continue; /* wrong input: ask again, state is unchanged */
+                snprintf(err, errlen, "Telegram refused the QR login request");
+                goto out;
             }
             break;
         }
 
-        case AUTH_WAIT_CODE: {
+        case AUTH_WAIT_QR: {
             if (!interactive) {
                 result = AUTH_NOT_LOGGED_IN;
                 goto out;
             }
-            printf("A login code was sent via %s.\n", code_destination(a.state_obj));
-            if (platform_read_line("Code: ", line, sizeof line) != 0 || line[0] == '\0') {
-                snprintf(err, errlen, "login aborted");
-                goto out;
-            }
-            cJSON *req = jreq("checkAuthenticationCode");
-            cJSON_AddStringToObject(req, "code", line);
-            if (step(td, req) != 0) {
-                continue;
+            const char *link = jstr(a.state_obj, "link");
+            if (strcmp(link, shown_link) != 0) {
+                snprintf(shown_link, sizeof shown_link, "%s", link);
+                printf("\nScan this QR code with Telegram on your phone:\n"
+                       "Settings > Devices > Link Desktop Device\n\n");
+                if (qr_render(link, stdout) != 0) {
+                    printf("(cannot draw the QR code; open this link on the phone)\n%s\n", link);
+                }
+                printf("\nWaiting for the scan... (the code refreshes every ~30 s)\n");
             }
             break;
         }
@@ -212,15 +196,10 @@ AuthResult auth_run(Td *td, const Config *cfg, int interactive, char *err, size_
             cJSON_AddStringToObject(req, "password", line);
             memset(line, 0, sizeof line);
             if (step(td, req) != 0) {
-                continue;
+                continue; /* wrong password: the state is unchanged, ask again */
             }
             break;
         }
-
-        case AUTH_WAIT_REGISTRATION:
-            snprintf(err, errlen,
-                     "this phone number has no Telegram account; sign up with the Telegram app first");
-            goto out;
 
         case AUTH_READY:
             result = AUTH_OK;
@@ -239,7 +218,7 @@ AuthResult auth_run(Td *td, const Config *cfg, int interactive, char *err, size_
             goto out;
         }
 
-        if (!wait_for_change(td, &a, before, 60.0)) {
+        if (!wait_for_update(td, &a, seen, 90.0)) {
             snprintf(err, errlen, "timed out waiting for Telegram (state %s); check the network",
                      auth_state_name(a.state));
             goto out;

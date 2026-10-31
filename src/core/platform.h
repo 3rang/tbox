@@ -10,7 +10,7 @@
 
 #include <stddef.h>
 
-/* Call once at startup (UTF-8 console on Windows). */
+/* Call once at startup (UTF-8 + ANSI console on Windows). */
 void platform_init(void);
 
 /* Monotonic seconds, for deadlines. */

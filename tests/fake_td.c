@@ -21,6 +21,8 @@ typedef struct Rule {
 static struct {
     char *events[MAX_EVENTS];
     int head, tail;
+    char *idle_events[MAX_EVENTS];
+    int idle_head, idle_tail;
     Rule rules[MAX_RULES];
     int nrules;
     cJSON *sent[MAX_SENT];
@@ -42,6 +44,9 @@ void fake_td_reset(void) {
     for (int i = F.head; i < F.tail; i++) {
         free(F.events[i]);
     }
+    for (int i = F.idle_head; i < F.idle_tail; i++) {
+        free(F.idle_events[i]);
+    }
     for (int i = 0; i < F.nrules; i++) {
         free(F.rules[i].reply);
         free(F.rules[i].update);
@@ -56,6 +61,12 @@ void fake_td_reset(void) {
 void fake_td_push(const char *json) {
     if (F.tail < MAX_EVENTS) {
         F.events[F.tail++] = dup_str(json);
+    }
+}
+
+void fake_td_push_when_idle(const char *json) {
+    if (F.idle_tail < MAX_EVENTS) {
+        F.idle_events[F.idle_tail++] = dup_str(json);
     }
 }
 
@@ -102,7 +113,17 @@ static void fake_send(int client_id, const char *request) {
         if (r->remaining > 0) {
             r->remaining--;
         }
-        if (r->update != NULL) {
+        if (r->update != NULL && r->update[0] == '[') {
+            /* A JSON array: several updates, in order. */
+            cJSON *arr = cJSON_Parse(r->update);
+            cJSON *u;
+            cJSON_ArrayForEach(u, arr) {
+                char *text = cJSON_PrintUnformatted(u);
+                fake_td_push(text);
+                free(text);
+            }
+            cJSON_Delete(arr);
+        } else if (r->update != NULL) {
             fake_td_push(r->update);
         }
         cJSON *reply = cJSON_Parse(r->reply);
@@ -124,7 +145,14 @@ static void fake_send(int client_id, const char *request) {
 static const char *fake_receive(double timeout) {
     (void)timeout;
     if (F.head == F.tail) {
-        return NULL;
+        /* Nothing pending: the program is waiting. Now "the phone" acts. */
+        if (F.idle_head == F.idle_tail) {
+            return NULL;
+        }
+        free(F.last_received);
+        F.last_received = F.idle_events[F.idle_head];
+        F.idle_events[F.idle_head++] = NULL;
+        return F.last_received;
     }
     free(F.last_received);
     F.last_received = F.events[F.head];

@@ -16,7 +16,7 @@ static const struct {
     const char *usage;
     const char *help;
 } COMMANDS[] = {
-    { "login", cmd_login, "login [--api-id ID --api-hash HASH]", "sign in (once); asks for phone, code, password" },
+    { "login", cmd_login, "login [--api-id ID --api-hash HASH]", "sign in once by scanning a QR code with your phone" },
     { "logout", cmd_logout, "logout", "sign out and forget the session" },
     { "send", cmd_send, "send <chat> <text...>", "send a text message" },
     { "upload", cmd_upload, "upload <chat> <file> [caption...]", "send a file" },

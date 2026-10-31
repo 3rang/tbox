@@ -21,12 +21,17 @@ const TdApi *fake_td_api(void);
 /* Queue an event (an update) for the next td_receive. */
 void fake_td_push(const char *json);
 
+/* Queue an event delivered only once the program is waiting with nothing
+ * else pending - what a user does on the phone while tbox waits. */
+void fake_td_push_when_idle(const char *json);
+
 /* Reply to every request of this @type with reply_json (the fake copies
  * the request's @extra onto it). */
 void fake_td_on(const char *type, const char *reply_json);
 
 /* Like fake_td_on, but consumed after one use, and optionally emits
- * update_json before the reply (as TDLib does with state changes). */
+ * update_json before the reply (as TDLib does with state changes).
+ * update_json may be a JSON array to emit several updates in order. */
 void fake_td_once(const char *type, const char *reply_json, const char *update_json);
 
 /* What was sent, in order. */

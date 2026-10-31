@@ -38,6 +38,13 @@ if(NOT MSVC)
   target_compile_options(cjson PRIVATE -w)
 endif()
 
+# --- qrcodegen (vendored, MIT) ----------------------------------------------
+add_library(qrcodegen STATIC third_party/qrcodegen/qrcodegen.c)
+target_include_directories(qrcodegen SYSTEM PUBLIC third_party/qrcodegen)
+if(NOT MSVC)
+  target_compile_options(qrcodegen PRIVATE -w)
+endif()
+
 # --- core: everything a command needs, without main() -----------------------
 add_library(tbox_core STATIC
   src/core/td.c
@@ -45,12 +52,13 @@ add_library(tbox_core STATIC
   src/core/session.c
   src/core/platform.c
   src/tg/auth.c
+  src/tg/qr.c
   src/tg/chat.c
   src/tg/message.c
   src/tg/outbox.c
 )
 target_include_directories(tbox_core PUBLIC src)
-target_link_libraries(tbox_core PUBLIC cjson)
+target_link_libraries(tbox_core PUBLIC cjson qrcodegen)
 target_compile_definitions(tbox_core PUBLIC TBOX_VERSION="${TBOX_VERSION}")
 if(UNIX)
   target_link_libraries(tbox_core PUBLIC ${CMAKE_DL_LIBS})
@@ -82,7 +90,7 @@ if(TBOX_BUILD_TESTS)
   add_library(tbox_fake_td STATIC tests/fake_td.c)
   target_link_libraries(tbox_fake_td PUBLIC tbox_core)
 
-  foreach(t test_td test_auth test_chat test_message test_config test_outbox)
+  foreach(t test_td test_auth test_chat test_message test_config test_outbox test_qr)
     add_executable(${t} tests/${t}.c)
     target_link_libraries(${t} PRIVATE tbox_fake_td)
     add_test(NAME ${t} COMMAND ${t})
